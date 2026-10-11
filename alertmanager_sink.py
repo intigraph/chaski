@@ -136,10 +136,38 @@ class AlertmanagerSink:
             raise ConnectionError(f"{event['event_id']}: accepted but not active on read-back")
 
     def renew(self, event: dict) -> None:
-        """Receipt-backed same-label lease refresh; no new domain event."""
-        if event.get("resolution_of"):
+        """Refresh the receiver's exact prior labels, never current policy labels."""
+        if event.get("resolution_of") or event.get("prior"):
             raise ValueError("cannot renew recovery")
-        self.deliver(event)
+        alerts = self._prior_alerts(event)
+        if len(alerts) != 1:
+            raise ConnectionError("renewal prior identity absent or ambiguous")
+        prior = alerts[0]
+        if not all(isinstance(value, str) for value in prior["labels"].values()):
+            raise ConnectionError("malformed renewal labels")
+        start = prior.get("startsAt")
+        if not isinstance(start, str):
+            raise ConnectionError("missing renewal start")
+        parsed = dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.timestamp() > self._clock():
+            raise ConnectionError("invalid renewal start")
+        end = _iso(self._clock() + self.ttl_s)
+        payload = {"labels": prior["labels"], "startsAt": start, "endsAt": end,
+                   "annotations": prior.get("annotations", {})}
+        status, _ = self._request("POST", "/api/v2/alerts", [payload])
+        if status // 100 != 2:
+            raise ConnectionError("renewal POST not accepted")
+        received = self._prior_alerts(event)
+        if len(received) != 1 or received[0]["labels"] != payload["labels"]:
+            raise ConnectionError("renewal exact identity not received")
+        observed_end = received[0].get("endsAt")
+        if not isinstance(observed_end, str):
+            raise ConnectionError("missing renewal expiry receipt")
+        expiry = dt.datetime.fromisoformat(observed_end.replace("Z", "+00:00"))
+        requested = dt.datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry < requested or received[0].get("startsAt") != start:
+            raise ConnectionError("renewal lease not received")
+
     def delivery_scope(self) -> dict:
         return {"kind": "alertmanager", "base": self.base, "emitter": self.emitter_label}
 

@@ -342,19 +342,18 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             need = [f for f in ("severity", "action", "condition", "comment") if not g.get(f)]
             if need:
                 raise RuleError(f"emitter {d['label']}: graph sink needs the Reaction fields {need}")
-        if "resolve_event" in d and (not isinstance(d["resolve_event"], str)
-                                      or not d["resolve_event"].strip()):
-            raise RuleError("resolve_event must be a nonempty event name")
+        if "resolve_event" in d:
+            raise RuleError("use the received-firing resolve_recovery protocol")
         for option in ("generation_event_ids", "missing_is_from"):
             if option in d and type(d[option]) is not bool:
                 raise RuleError(f"{option} must be a boolean")
-        if d.get("missing_is_from") and not (d.get("resolve_event") and d.get("generation_event_ids")):
-            raise RuleError("complete-inventory recovery requires resolve_event and generation_event_ids")
+        if d.get("missing_is_from") and not (d.get("resolve_recovery") and d.get("generation_event_ids")):
+            raise RuleError("complete-inventory recovery requires resolve_recovery and generation_event_ids")
         renew = d.get("renew_interval_s", 0)
         if type(renew) is not int or renew < 0:
             raise RuleError("renew_interval_s must be a nonnegative integer")
         if renew and (d.get("trigger", "schedule") != "schedule" or "alertmanager" not in kinds
-                      or not d.get("resolve_event") or not d.get("generation_event_ids")):
+                      or not d.get("resolve_recovery") or not d.get("generation_event_ids")):
             raise RuleError("renewal requires a scheduled generation-bound recovering alert emitter")
         if renew:
             ttl = d["sink"]["alertmanager"].get("ttl_s", 86400)
@@ -363,8 +362,6 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
         recovery = d.get("resolve_recovery", False)
         if not isinstance(recovery, bool) or (recovery and ("command" in kinds or d.get("trigger") == "external")):
             raise RuleError("recovery must be boolean and requires a verdict emitter without a command sink")
-        if recovery and d.get("resolve_event"):
-            raise RuleError("select one recovery protocol")
         e = emitter.Emitter(label=d["label"], command=list(d.get("command", [])),
                             interval_s=parse_duration(d["schedule"]), owner=d["owner"],
                             event=d.get("event", "unblocked"), timeout_s=int(d.get("timeout_s", 300)),
@@ -372,7 +369,6 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             from_verdict=d.get("from", emitter.BLOCKED),
                             to_verdict=d.get("to", emitter.UNBLOCKED),
                             baseline_emits=bool(d.get("baseline_emits", False)),
-                            resolve_event=d.get("resolve_event"),
                             generation_event_ids=bool(d.get("generation_event_ids", False)),
                             missing_is_from=bool(d.get("missing_is_from", False)),
                             resolve_recovery=recovery,

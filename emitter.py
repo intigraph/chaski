@@ -151,7 +151,6 @@ class Emitter:
     from_verdict: str = BLOCKED
     to_verdict: str = UNBLOCKED
     baseline_emits: bool = False
-    resolve_event: str | None = None
     generation_event_ids: bool = False
     missing_is_from: bool = False
     change_driven: bool = False
@@ -306,26 +305,6 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
                 (verdict, generation, r.get("evidence"), now, emitter.label, item))
             if last == emitter.from_verdict and verdict == emitter.to_verdict:
                 emit(r, item, generation)
-            elif (emitter.resolve_event and last == emitter.to_verdict
-                  and verdict == emitter.from_verdict and last_event):
-                # Resolve the exact frozen firing identity, never a new label set.
-                old = conn.execute("SELECT payload FROM outbox WHERE event_id=?",
-                                   (last_event,)).fetchone()
-                if old is None:
-                    raise ProtocolError("resolution has no retained firing payload")
-                payload = json.loads(old[0])
-                resolution_id = hashlib.sha256(
-                    (last_event + ":resolved").encode()).hexdigest()
-                payload.update(event_id=resolution_id, event=emitter.resolve_event,
-                               resolution_of=last_event, resolved_at=now,
-                               generation=generation)
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO outbox"
-                    " (event_id,emitter,item,generation,payload,created) VALUES (?,?,?,?,?,?)",
-                    (resolution_id, emitter.label, item, generation,
-                     json.dumps(payload, sort_keys=True), now))
-                if cur.rowcount:
-                    queued.append(resolution_id)
         for (item,) in conn.execute(
                 "SELECT item FROM verdicts WHERE emitter=? AND tracked=1", (emitter.label,)).fetchall():
             if item not in present and (scope is None or item in scope):
@@ -577,7 +556,7 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
     if not callable(renewal):
         raise ProtocolError("renewal requires a lease-aware sink")
     rows = conn.execute(
-        "SELECT v.item, o.event_id, o.payload, COALESCE(r.attempts,0) "
+        "SELECT v.item, o.event_id, o.payload, COALESCE(r.attempts,0), o.delivery_scope "
         "FROM verdicts v JOIN outbox o ON o.event_id=v.last_event "
         "LEFT JOIN renewal_receipts r ON r.event_id=o.event_id "
         "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=? "
@@ -588,7 +567,7 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
         (definition.label, definition.to_verdict, json.dumps(sorted(positive)), now,
          now-definition.renew_interval_s, limit)).fetchall()
     ok = failed = 0
-    for item, identity, payload, attempts in rows:
+    for item, identity, payload, attempts, bound_scope in rows:
         if item not in positive:
             continue
         event = json.loads(payload)
@@ -597,6 +576,9 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
         if budget is not None and not budget.try_take(now):
             break
         try:
+            current_scope = getattr(sink, "delivery_scope", lambda: None)()
+            if bound_scope is None or current_scope != json.loads(bound_scope):
+                raise ProtocolError("renewal receiver scope changed or unproven")
             renewal(event)
         except Exception as exc:
             failed += 1
@@ -648,7 +630,10 @@ class Runner:
         self.last_attempt = saved[0] if saved else 0.0
         self.last_success = saved[1] if saved else 0.0
         self.runs = {"ok": saved[2] if saved else 0, "unknown": saved[3] if saved else 0}
-        self.queued_total = 0
+        self.queued_total = (conn.execute(
+            "SELECT (SELECT COUNT(*) FROM outbox WHERE emitter=?)"
+            " + (SELECT COUNT(*) FROM recovery_outbox WHERE emitter=?)",
+            (emitter.label, emitter.label)).fetchone()[0] if emitter.persist_runs else 0)
         self._snap_lock = threading.Lock()
         self._snapshot: dict = {}
         self._publish()

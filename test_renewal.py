@@ -11,6 +11,15 @@ class Sink:
         self.renewals = []
         self.fail = False
 
+    def delivery_scope(self):
+        return {"kind": "test", "receiver": "lease"}
+
+    def prepare_recovery(self, event):
+        return {"delivery_scope": self.delivery_scope()}
+
+    def resolve(self, event):
+        self.deliveries.append(dict(event))
+
     def deliver(self, event):
         self.deliveries.append(dict(event))
 
@@ -28,7 +37,7 @@ def setup():
         owner="crew",
         from_verdict="BELOW",
         to_verdict="ABOVE",
-        resolve_event="recovered",
+        resolve_recovery=True,
         generation_event_ids=True,
         renew_interval_s=30,
         persist_runs=True,
@@ -72,7 +81,7 @@ def test_recovery_and_new_generation_cannot_refresh_old_identity():
     tick(runner, 20, "ABOVE")
     old = sink.deliveries[0]["event_id"]
     tick(runner, 100, "BELOW")
-    assert sink.deliveries[1]["resolution_of"] == old
+    assert sink.deliveries[1]["prior"]["event_id"] == old
     tick(runner, 200, "ABOVE")
     new = sink.deliveries[2]["event_id"]
     assert new != old
@@ -121,3 +130,22 @@ def test_nonpositive_old_row_cannot_starve_eligible_refresh():
     emitter.deliver_pending(conn, sink, 20, definition.label)
     assert emitter.renew_active(conn, sink, 100, definition, {"b"}, limit=1) == (1, 0)
     assert sink.renewals[0]["item"] == "b"
+
+
+def test_changed_receiver_scope_never_refreshes_prior_firing():
+    _, _, sink, runner = setup()
+    tick(runner, 10, "BELOW")
+    tick(runner, 20, "ABOVE")
+    sink.delivery_scope = lambda: {"kind": "test", "receiver": "other"}
+    tick(runner, 100, "ABOVE")
+    assert sink.renewals == []
+    assert runner._snapshot["renewal_failures"] == 1
+
+
+def test_one_shot_queued_counter_does_not_reset_on_restart():
+    definition, conn, sink, runner = setup()
+    tick(runner, 10, "BELOW")
+    tick(runner, 20, "ABOVE")
+    tick(runner, 100, "BELOW")
+    restarted = emitter.Runner(definition, conn, sink)
+    assert restarted.queued_total == runner.queued_total == 2
