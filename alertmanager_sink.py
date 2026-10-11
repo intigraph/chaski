@@ -90,7 +90,7 @@ class AlertmanagerSink:
             "alertname": self.alert["alertname"],
             "severity": self.alert["severity"],
             "emitter": self.emitter_label,
-            "event_id": event["event_id"],
+            "event_id": event.get("resolution_of") or event["event_id"],
             "item": event["item"],
         })
         kind = event.get("work_kind")
@@ -105,6 +105,8 @@ class AlertmanagerSink:
     def payload(self, event: dict) -> dict:
         start = event["observed_at"]
         end = max(start, self._clock()) + self.ttl_s
+        if event.get("resolution_of"):
+            end = event["resolved_at"]
         fields = {k: ("" if v is None else v) for k, v in event.items()}
         summary = self.alert.get("summary", "{event} for {item}").format_map(_Missing(fields))
         annotations = {"summary": summary}
@@ -114,12 +116,17 @@ class AlertmanagerSink:
                 "startsAt": _iso(start), "endsAt": _iso(end)}
 
     def _received(self, event: dict) -> bool:
-        q = urllib.parse.urlencode([("filter", f'event_id="{event["event_id"]}"'),
+        identity = event.get("resolution_of") or event["event_id"]
+        q = urllib.parse.urlencode([("filter", f'event_id="{identity}"'),
                                     ("filter", f'emitter="{self.emitter_label}"')])
         status, raw = self._request("GET", f"/api/v2/alerts?{q}")
         if status // 100 != 2 or not raw:
             raise ConnectionError(f"read-back: HTTP {status}, {len(raw)} bytes")
-        return any(a.get("labels", {}).get("event_id") == event["event_id"] for a in json.loads(raw))
+        rows = json.loads(raw)
+        if not isinstance(rows, list) or any(not isinstance(a, dict) for a in rows):
+            raise ConnectionError("read-back: malformed alert inventory")
+        active = any(a.get("labels", {}).get("event_id") == identity for a in rows)
+        return not active if event.get("resolution_of") else active
 
     def deliver(self, event: dict) -> None:
         status, _ = self._request("POST", "/api/v2/alerts", [self.payload(event)])
@@ -127,6 +134,39 @@ class AlertmanagerSink:
             raise ConnectionError(f"POST /api/v2/alerts: HTTP {status}")
         if not self._received(event):
             raise ConnectionError(f"{event['event_id']}: accepted but not active on read-back")
+
+    def renew(self, event: dict) -> None:
+        """Refresh the receiver's exact prior labels, never current policy labels."""
+        if event.get("resolution_of") or event.get("prior"):
+            raise ValueError("cannot renew recovery")
+        alerts = self._prior_alerts(event)
+        if len(alerts) != 1:
+            raise ConnectionError("renewal prior identity absent or ambiguous")
+        prior = alerts[0]
+        if not all(isinstance(value, str) for value in prior["labels"].values()):
+            raise ConnectionError("malformed renewal labels")
+        start = prior.get("startsAt")
+        if not isinstance(start, str):
+            raise ConnectionError("missing renewal start")
+        parsed = dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.timestamp() > self._clock():
+            raise ConnectionError("invalid renewal start")
+        end = _iso(self._clock() + self.ttl_s)
+        payload = {"labels": prior["labels"], "startsAt": start, "endsAt": end,
+                   "annotations": prior.get("annotations", {})}
+        status, _ = self._request("POST", "/api/v2/alerts", [payload])
+        if status // 100 != 2:
+            raise ConnectionError("renewal POST not accepted")
+        received = self._prior_alerts(event)
+        if len(received) != 1 or received[0]["labels"] != payload["labels"]:
+            raise ConnectionError("renewal exact identity not received")
+        observed_end = received[0].get("endsAt")
+        if not isinstance(observed_end, str):
+            raise ConnectionError("missing renewal expiry receipt")
+        expiry = dt.datetime.fromisoformat(observed_end.replace("Z", "+00:00"))
+        requested = dt.datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry < requested or received[0].get("startsAt") != start:
+            raise ConnectionError("renewal lease not received")
 
     def delivery_scope(self) -> dict:
         return {"kind": "alertmanager", "base": self.base, "emitter": self.emitter_label}
@@ -227,3 +267,10 @@ class ChainSink:
     def deliver(self, event: dict) -> None:
         for s in self.sinks:
             s.deliver(event)
+
+    def renew(self, event: dict) -> None:
+        recipients = [s for s in self.sinks if callable(getattr(s, "renew", None))]
+        if not recipients:
+            raise ValueError("no lease-aware recipient")
+        for sink in recipients:
+            sink.renew(event)

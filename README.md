@@ -173,3 +173,9 @@ reconciliation retain their existing behavior. This flag does not move the
 separate ROOT event-rule consumer to SSE. Closing a network reader can wait for
 its bounded 45-second socket timeout. Source tests are not permission to enable
 this flag, replay production history or claim natural scheduled acceptance.
+
+### Repeated command failures
+
+`failure_family_adapter.py` consumes the `dp failure-families` JSON report and a directly typed Quipu `ConfigSetting` containing a single JSON description. Policy fields are `default_threshold`, `window_seconds`, `default_owner`, optional `family_thresholds` (hashed family ID to threshold), and `tool_owners` (tool name to crew owner). Invalid/missing/ambiguous policy or failed aggregation exits nonzero, leaving the emitter UNKNOWN. Ownership comes from this graph policy, with an explicit crew fallback; human recipients are refused.
+
+Configure the emitter with `from: BELOW`, `to: ABOVE`, `resolve_recovery: true`, `generation_event_ids: true`, and `missing_is_from: true`. Keep `baseline_emits: false`: first sighting above threshold is a baseline, not an observed crossing. A complete successful rolling-window inventory can resolve absent families; partial observations and failed runs cannot. Unsupported program shapes are a separate disclosed measurement population, not silently attributed to a known family. Each actual crossing gets a generation-bound identity, stable across retries and restarts. Recovery refers to the original frozen firing labels and cannot overtake its receipt. The existing Alertmanager sink retains its finite TTL; scheduled delivery and producer-liveness monitoring are still deployment requirements. This adapter is not scheduled or enabled by the repository itself.

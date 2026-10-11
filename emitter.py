@@ -66,6 +66,24 @@ BASE_BACKOFF_S = 30
 DELIVER_PER_TICK = 5
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS renewal_receipts (
+    event_id TEXT PRIMARY KEY,
+    last_received REAL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS runner_status (
+    emitter TEXT PRIMARY KEY,
+    last_attempt REAL NOT NULL,
+    last_success REAL NOT NULL,
+    ok INTEGER NOT NULL,
+    unknown INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS delivery_budget (
+    scope TEXT PRIMARY KEY,
+    last_taken REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS verdicts (
     emitter    TEXT NOT NULL,
     item       TEXT NOT NULL,
@@ -133,8 +151,12 @@ class Emitter:
     from_verdict: str = BLOCKED
     to_verdict: str = UNBLOCKED
     baseline_emits: bool = False
+    generation_event_ids: bool = False
+    missing_is_from: bool = False
     change_driven: bool = False
     externally_triggered: bool = False
+    renew_interval_s: int = 0
+    persist_runs: bool = False
     resolve_recovery: bool = False
 
     @property
@@ -204,11 +226,22 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
     they were.
     """
     _validate(emitter, records)
+    if emitter.missing_is_from and scope is None:
+        # Opt-in only for complete inventories of a bounded rolling window.
+        # Failed adapters never reach observe; partial scope never clears absence.
+        present_keys = {r[emitter.key] for r in records}
+        records = records + [{emitter.key: item, "verdict": emitter.from_verdict}
+                             for (item,) in conn.execute(
+                                 "SELECT item FROM verdicts WHERE emitter=? AND tracked=1",
+                                 (emitter.label,)).fetchall() if item not in present_keys]
     if scope is not None and any(r[emitter.key] not in scope for r in records):
         raise ProtocolError("adapter record outside its partial scope")
     queued: list[str] = []
 
     def emit(r: dict, item: str, generation: int) -> None:
+        if emitter.generation_event_ids:
+            r = {**r, "event_id": hashlib.sha256(
+                f"{emitter.label}:{r['event_id']}:{generation}".encode()).hexdigest()}
         payload = {
             "event_id": r["event_id"], "event": emitter.event, "emitter": emitter.label,
             "item": item, "generation": generation,
@@ -259,7 +292,7 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
                 # Same verdict, NEW transition: it went away and came back
                 # between two runs (re-blocked and unblocked again; re-verified
                 # and lapsed again). The adapter's id says so; the verdict cannot.
-                if (verdict == emitter.to_verdict and last_event is not None
+                if (not emitter.generation_event_ids and verdict == emitter.to_verdict and last_event is not None
                         and r["event_id"] != last_event):
                     generation += 2
                     conn.execute("UPDATE verdicts SET generation=? WHERE emitter=? AND item=?",
@@ -454,6 +487,12 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     rows = conn.execute(query + " ORDER BY created LIMIT ?", args).fetchall()
     ok = failed = 0
     for event_id, payload, attempts, _created, table in rows:
+        event = json.loads(payload)
+        if event.get("resolution_of"):
+            prior = conn.execute("SELECT delivered_at FROM outbox WHERE event_id=?",
+                                 (event["resolution_of"],)).fetchone()
+            if prior is None or prior[0] is None:
+                continue
         if budget is not None and not budget.try_take(now):
             break  # the rest wait for a later slot; nothing is charged to them
         try:
@@ -502,6 +541,79 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     return ok, failed
 
 
+def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: Emitter,
+                 positive: set[str], budget: WriteBudget | None = None,
+                 limit: int = DELIVER_PER_TICK) -> tuple[int, int]:
+    """Refresh only received firings with fresh positive source evidence.
+
+    Renewal sends the original payload only to a lease-aware receiver. It creates
+    no transition/outbox/graph event. Missing, UNKNOWN, recovery, pending firing
+    and old generations cannot authorize a refresh.
+    """
+    if not definition.renew_interval_s or not positive:
+        return 0, 0
+    renewal = getattr(sink, "renew", None)
+    if not callable(renewal):
+        raise ProtocolError("renewal requires a lease-aware sink")
+    rows = conn.execute(
+        "SELECT v.item, o.event_id, o.payload, "
+        "CASE WHEN r.last_error IS NOT NULL THEN r.attempts ELSE 0 END, o.delivery_scope "
+        "FROM verdicts v JOIN outbox o ON o.event_id=v.last_event "
+        "LEFT JOIN renewal_receipts r ON r.event_id=o.event_id "
+        "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=? "
+        "AND v.item IN (SELECT value FROM json_each(?)) "
+        "AND o.delivered_at IS NOT NULL AND COALESCE(r.next_attempt,0)<=? "
+        "AND COALESCE(r.last_received,o.delivered_at)<=? "
+        "ORDER BY COALESCE(r.last_received,o.delivered_at) LIMIT ?",
+        (definition.label, definition.to_verdict, json.dumps(sorted(positive)), now,
+         now-definition.renew_interval_s, limit)).fetchall()
+    ok = failed = 0
+    for item, identity, payload, attempts, bound_scope in rows:
+        if item not in positive:
+            continue
+        event = json.loads(payload)
+        if event.get("resolution_of"):
+            raise ProtocolError("active generation points to recovery")
+        if budget is not None and not budget.try_take(now):
+            break
+        try:
+            current_scope = getattr(sink, "delivery_scope", lambda: None)()
+            if bound_scope is None or current_scope != json.loads(bound_scope):
+                raise ProtocolError("renewal receiver scope changed or unproven")
+            renewal(event)
+        except Exception as exc:
+            failed += 1
+            backoff = min(MAX_BACKOFF_S, BASE_BACKOFF_S * 2 ** min(attempts, 20))
+            conn.execute(
+                "INSERT INTO renewal_receipts(event_id,attempts,next_attempt,last_error) "
+                "VALUES(?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET "
+                "attempts=excluded.attempts,next_attempt=excluded.next_attempt,last_error=excluded.last_error",
+                (identity, attempts+1, now+backoff, str(exc)[:300]))
+            continue
+        conn.execute(
+            "INSERT INTO renewal_receipts(event_id,last_received,attempts,next_attempt) "
+            "VALUES(?,?,0,0) ON CONFLICT(event_id) DO UPDATE SET "
+            "last_received=excluded.last_received,attempts=0,next_attempt=0,last_error=NULL",
+            (identity, now))
+        ok += 1
+    return ok, failed
+
+
+class PersistentWriteBudget(WriteBudget):
+    """A local one-shot keeps the same global sink budget across restarts."""
+    def __init__(self, conn: sqlite3.Connection, interval_s: float):
+        super().__init__(interval_s)
+        self.conn = conn
+
+    def try_take(self, now: float) -> bool:
+        row = self.conn.execute(
+            "INSERT INTO delivery_budget(scope,last_taken) VALUES('global',?) "
+            "ON CONFLICT(scope) DO UPDATE SET last_taken=excluded.last_taken "
+            "WHERE delivery_budget.last_taken<=excluded.last_taken-?",
+            (now, self.interval_s))
+        return row.rowcount == 1
+
+
 class Runner:
     """Schedules one emitter's adapter runs and deliveries, and counts them.
 
@@ -513,15 +625,22 @@ class Runner:
     def __init__(self, emitter: Emitter, conn: sqlite3.Connection, sink: Sink,
                  budget: WriteBudget | None = None):
         self.emitter, self.conn, self.sink, self.budget = emitter, conn, sink, budget
-        self.last_attempt = 0.0
-        self.last_success = 0.0
-        self.runs = {"ok": 0, "unknown": 0}
-        self.queued_total = 0
+        saved = (conn.execute("SELECT last_attempt,last_success,ok,unknown FROM runner_status "
+                              "WHERE emitter=?", (emitter.label,)).fetchone()
+                 if emitter.persist_runs else None)
+        self.last_attempt = saved[0] if saved else 0.0
+        self.last_success = saved[1] if saved else 0.0
+        self.runs = {"ok": saved[2] if saved else 0, "unknown": saved[3] if saved else 0}
+        self.queued_total = (conn.execute(
+            "SELECT (SELECT COUNT(*) FROM outbox WHERE emitter=?)"
+            " + (SELECT COUNT(*) FROM recovery_outbox WHERE emitter=?)",
+            (emitter.label, emitter.label)).fetchone()[0] if emitter.persist_runs else 0)
         self._snap_lock = threading.Lock()
         self._snapshot: dict = {}
         self._publish()
 
     def tick(self, now: float) -> None:
+        positive = set()
         if not self.emitter.externally_triggered and now - self.last_attempt >= self.emitter.interval_s:
             self.last_attempt = now
             try:
@@ -529,12 +648,22 @@ class Runner:
                 self.queued_total += len(observe(self.conn, self.emitter, records, now))
                 self.runs["ok"] += 1
                 self.last_success = now
+                positive = {r[self.emitter.key] for r in records
+                            if r["verdict"] == self.emitter.to_verdict}
             except Exception as exc:  # noqa: BLE001 — a failed run is UNKNOWN for every item
                 self.runs["unknown"] += 1
                 LOG.warning("emitter %s UNKNOWN (no verdict changed): %s", self.emitter.label, exc)
         self.queued_total += len(queue_recoveries(self.conn, self.emitter))
         deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK,
                         resolve_recovery=self.emitter.resolve_recovery)
+        renew_active(self.conn, self.sink, now, self.emitter, positive, self.budget)
+        if self.emitter.persist_runs:
+            self.conn.execute(
+                "INSERT INTO runner_status VALUES(?,?,?,?,?) ON CONFLICT(emitter) DO UPDATE SET "
+                "last_attempt=excluded.last_attempt,last_success=excluded.last_success,"
+                "ok=excluded.ok,unknown=excluded.unknown",
+                (self.emitter.label,self.last_attempt,self.last_success,
+                 self.runs["ok"],self.runs["unknown"]))
         self._publish()
 
     def _publish(self) -> None:
@@ -547,7 +676,14 @@ class Runner:
             "SELECT (SELECT COUNT(*) FROM outbox WHERE emitter=? AND delivered_at IS NOT NULL)"
             " + (SELECT COUNT(*) FROM recovery_outbox WHERE emitter=? AND delivered_at IS NOT NULL)",
             (self.emitter.label, self.emitter.label)).fetchone()[0]
-        snap = {"runs": dict(self.runs), "last_success": self.last_success,
+        renewal_pending, renewal_failures = self.conn.execute(
+            "SELECT COUNT(r.last_received),COALESCE(SUM(CASE WHEN r.last_error IS NOT NULL THEN 1 ELSE 0 END),0) "
+            "FROM renewal_receipts r JOIN outbox o ON o.event_id=r.event_id "
+            "JOIN verdicts v ON v.last_event=o.event_id "
+            "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=?",
+            (self.emitter.label,self.emitter.to_verdict)).fetchone()
+        snap = {"renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
+                "runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
                 "oldest_created": oldest, "delivered": delivered}
         with self._snap_lock:
@@ -562,6 +698,8 @@ class Runner:
         lines += [
             f'chaski_emitter_last_success_timestamp_seconds{{emitter="{label}"}} {s["last_success"]:.0f}',
             f'chaski_emitter_events_queued_total{{emitter="{label}"}} {s["queued_total"]}',
+            f'chaski_emitter_renewal_failures{{emitter="{label}"}} {s["renewal_failures"]}',
+            f'chaski_emitter_renewal_receipts{{emitter="{label}"}} {s["renewal_receipts"]}',
             f'chaski_emitter_outbox_pending{{emitter="{label}"}} {s["pending"]}',
             f'chaski_emitter_outbox_delivered_total{{emitter="{label}"}} {s["delivered"]}',
             f'chaski_emitter_outbox_oldest_pending_age_seconds{{emitter="{label}"}} '

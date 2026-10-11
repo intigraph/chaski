@@ -342,6 +342,23 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             need = [f for f in ("severity", "action", "condition", "comment") if not g.get(f)]
             if need:
                 raise RuleError(f"emitter {d['label']}: graph sink needs the Reaction fields {need}")
+        if "resolve_event" in d:
+            raise RuleError("use the received-firing resolve_recovery protocol")
+        for option in ("generation_event_ids", "missing_is_from"):
+            if option in d and type(d[option]) is not bool:
+                raise RuleError(f"{option} must be a boolean")
+        if d.get("missing_is_from") and not (d.get("resolve_recovery") and d.get("generation_event_ids")):
+            raise RuleError("complete-inventory recovery requires resolve_recovery and generation_event_ids")
+        renew = d.get("renew_interval_s", 0)
+        if type(renew) is not int or renew < 0:
+            raise RuleError("renew_interval_s must be a nonnegative integer")
+        if renew and (d.get("trigger", "schedule") != "schedule" or "alertmanager" not in kinds
+                      or not d.get("resolve_recovery") or not d.get("generation_event_ids")):
+            raise RuleError("renewal requires a scheduled generation-bound recovering alert emitter")
+        if renew:
+            ttl = d["sink"]["alertmanager"].get("ttl_s", 86400)
+            if type(ttl) is not int or not parse_duration(d["schedule"]) <= renew < ttl:
+                raise RuleError("renewal interval must fit schedule and finite alert TTL")
         recovery = d.get("resolve_recovery", False)
         if not isinstance(recovery, bool) or (recovery and ("command" in kinds or d.get("trigger") == "external")):
             raise RuleError("recovery must be boolean and requires a verdict emitter without a command sink")
@@ -352,9 +369,12 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             from_verdict=d.get("from", emitter.BLOCKED),
                             to_verdict=d.get("to", emitter.UNBLOCKED),
                             baseline_emits=bool(d.get("baseline_emits", False)),
+                            generation_event_ids=bool(d.get("generation_event_ids", False)),
+                            missing_is_from=bool(d.get("missing_is_from", False)),
                             resolve_recovery=recovery,
                             change_driven=d.get("trigger", "schedule") == "changes",
-                            externally_triggered=d.get("trigger", "schedule") == "external")
+                            externally_triggered=d.get("trigger", "schedule") == "external",
+                            renew_interval_s=renew)
         if d.get("trigger", "schedule") not in {"schedule", "changes", "external"}:
             raise RuleError("emitter trigger must be schedule, changes or external")
         if e.externally_triggered and d.get("baseline_emits") is not True:

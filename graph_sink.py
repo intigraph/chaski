@@ -158,6 +158,26 @@ class QuipuFiringSink:
             raise ConnectionError(f"read-back returned no rows field: {str(out)[:200]}")
         return any(str(r.get("e")) == event["event_id"] for r in rows)
 
+    def setup_present(self) -> bool:
+        """Direct type read-back for a one-shot's retained setup receipt."""
+        query = (f"SELECT ?type WHERE {{ <{self.reaction_iri()}> a ?type . "
+                 f"FILTER(?type = <{self.ns}Reaction>) }}")
+        req = urllib.request.Request(
+            self.base + "/query", data=json.dumps({"query": query}).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT,
+                     "X-Quipu-Client": CLIENT_LABEL})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            out = json.load(resp)
+        rows = out.get("rows")
+        if out.get("error") or out.get("truncated") or not isinstance(rows, list):
+            raise ConnectionError("setup read-back UNKNOWN")
+        expected = {self.ns + "Reaction"}
+        if self.ns == NS:
+            expected.add("aegis:Reaction")
+        if any(not isinstance(row, dict) or row.get("type") not in expected for row in rows):
+            raise ConnectionError("setup read-back has unexpected type")
+        return bool(rows)
+
     def setup_pending(self) -> bool:
         """The Reaction every firing points at is owed once per process. The
         emitter spends a write-budget slot on it, separately from any event."""
