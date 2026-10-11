@@ -556,7 +556,8 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
     if not callable(renewal):
         raise ProtocolError("renewal requires a lease-aware sink")
     rows = conn.execute(
-        "SELECT v.item, o.event_id, o.payload, COALESCE(r.attempts,0), o.delivery_scope "
+        "SELECT v.item, o.event_id, o.payload, "
+        "CASE WHEN r.last_error IS NOT NULL THEN r.attempts ELSE 0 END, o.delivery_scope "
         "FROM verdicts v JOIN outbox o ON o.event_id=v.last_event "
         "LEFT JOIN renewal_receipts r ON r.event_id=o.event_id "
         "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=? "
@@ -585,14 +586,14 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
             backoff = min(MAX_BACKOFF_S, BASE_BACKOFF_S * 2 ** min(attempts, 20))
             conn.execute(
                 "INSERT INTO renewal_receipts(event_id,attempts,next_attempt,last_error) "
-                "VALUES(?,1,?,?) ON CONFLICT(event_id) DO UPDATE SET "
-                "attempts=attempts+1,next_attempt=excluded.next_attempt,last_error=excluded.last_error",
-                (identity, now+backoff, str(exc)[:300]))
+                "VALUES(?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET "
+                "attempts=excluded.attempts,next_attempt=excluded.next_attempt,last_error=excluded.last_error",
+                (identity, attempts+1, now+backoff, str(exc)[:300]))
             continue
         conn.execute(
             "INSERT INTO renewal_receipts(event_id,last_received,attempts,next_attempt) "
-            "VALUES(?,?,1,0) ON CONFLICT(event_id) DO UPDATE SET "
-            "last_received=excluded.last_received,attempts=attempts+1,next_attempt=0,last_error=NULL",
+            "VALUES(?,?,0,0) ON CONFLICT(event_id) DO UPDATE SET "
+            "last_received=excluded.last_received,attempts=0,next_attempt=0,last_error=NULL",
             (identity, now))
         ok += 1
     return ok, failed

@@ -149,3 +149,35 @@ def test_one_shot_queued_counter_does_not_reset_on_restart():
     tick(runner, 100, "BELOW")
     restarted = emitter.Runner(definition, conn, sink)
     assert restarted.queued_total == runner.queued_total == 2
+
+
+def test_success_receipts_reset_consecutive_failure_backoff_across_restart():
+    definition, conn, sink, runner = setup()
+    tick(runner, 10, "BELOW")
+    tick(runner, 20, "ABOVE")
+    for now in (100, 200, 300):
+        tick(runner, now, "ABOVE")
+    assert len(sink.renewals) == 3
+    sink.fail = True
+    tick(runner, 400, "ABOVE")
+    assert conn.execute("SELECT attempts,next_attempt FROM renewal_receipts").fetchone() == (1, 430)
+    restarted = emitter.Runner(definition, conn, sink)
+    tick(restarted, 430, "ABOVE")
+    assert conn.execute("SELECT attempts,next_attempt FROM renewal_receipts").fetchone() == (2, 490)
+    sink.fail = False
+    tick(restarted, 490, "ABOVE")
+    assert conn.execute("SELECT attempts,next_attempt FROM renewal_receipts").fetchone() == (0, 0)
+    sink.fail = True
+    tick(restarted, 530, "ABOVE")
+    assert conn.execute("SELECT attempts,next_attempt FROM renewal_receipts").fetchone() == (1, 560)
+
+
+def test_legacy_success_attempt_count_does_not_inflate_failure_backoff():
+    _, conn, sink, runner = setup()
+    tick(runner, 10, "BELOW")
+    tick(runner, 20, "ABOVE")
+    tick(runner, 100, "ABOVE")
+    conn.execute("UPDATE renewal_receipts SET attempts=100,last_error=NULL")
+    sink.fail = True
+    tick(runner, 200, "ABOVE")
+    assert conn.execute("SELECT attempts,next_attempt FROM renewal_receipts").fetchone() == (1, 230)
