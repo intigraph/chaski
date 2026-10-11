@@ -126,6 +126,8 @@ class Recovery(unittest.TestCase):
         self.recover()
         calls = []
         class Lost:
+            def delivery_scope(inner):
+                return self.sink.delivery_scope()
             def prepare_recovery(self, event):
                 calls.append("prepare")
                 return {"identity": "old-route"}
@@ -153,6 +155,121 @@ class Recovery(unittest.TestCase):
             self.assertEqual(c.execute("SELECT verdict FROM verdicts").fetchone()[0], "BLOCKED")
             self.assertIn("prior_event", {r[1] for r in c.execute("PRAGMA table_info(recovery_outbox)")})
             c.close()
+
+
+class ReceiverScope(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "scope.db"
+        self.conn = em.connect(self.db)
+        self.addCleanup(lambda: self.conn.close())
+        self.e = em.Emitter("control", [], 0, "owner", resolve_recovery=True)
+        self.sink = em.JsonlSink(Path(self.tmp.name) / "original.jsonl")
+        em.observe(self.conn, self.e, [rec("one", "BLOCKED")], 100)
+        em.observe(self.conn, self.e, [rec("one", "UNBLOCKED")], 101)
+
+    def fire(self, sink=None):
+        self.assertEqual(em.deliver_pending(self.conn, sink or self.sink, 102, "control"), (1, 0))
+
+    def recover(self):
+        em.observe(self.conn, self.e, [rec("one", "BLOCKED")], 103)
+
+    def send(self, sink=None, now=104):
+        return em.deliver_pending(self.conn, sink or self.sink, now, "control", resolve_recovery=True)
+
+    def restart(self):
+        self.conn.close()
+        self.conn = em.connect(self.db)
+
+    def assert_debt(self):
+        self.assertIsNone(self.conn.execute("SELECT delivered_at FROM recovery_outbox").fetchone()[0])
+        self.assertEqual(len(self.sink.ids()), 1)
+
+    def test_path_change_after_restart_refuses_before_prepare(self):
+        self.fire()
+        self.recover()
+        self.restart()
+        other = em.JsonlSink(Path(self.tmp.name) / "empty.jsonl")
+        with patch.object(other, "prepare_recovery", side_effect=AssertionError("wrong receiver read")):
+            self.assertEqual(self.send(other), (0, 1))
+        self.assert_debt()
+        self.assertEqual(self.send(now=200), (1, 0))
+
+    def test_frozen_receipt_target_change_retains_debt(self):
+        self.fire()
+        self.recover()
+        with patch.object(self.sink, "resolve", side_effect=ConnectionError("lost answer")):
+            self.assertEqual(self.send(), (0, 1))
+        frozen = self.conn.execute("SELECT payload FROM recovery_outbox").fetchone()[0]
+        self.restart()
+        self.assertEqual(self.send(em.JsonlSink(Path(self.tmp.name) / "empty.jsonl"), 200), (0, 1))
+        self.assertEqual(self.conn.execute("SELECT payload FROM recovery_outbox").fetchone()[0], frozen)
+        self.assert_debt()
+        self.assertEqual(self.send(now=300), (1, 0))
+
+    def test_legacy_delivered_receipt_is_not_bound_from_current_config(self):
+        self.fire()
+        self.conn.execute("UPDATE outbox SET delivery_scope=NULL")
+        self.recover()
+        self.restart()
+        self.assertEqual(self.send(), (0, 1))
+        self.assert_debt()
+
+    def test_legacy_attempted_delivery_remains_unbound(self):
+        self.conn.execute("UPDATE outbox SET attempts=1")
+        self.fire()
+        self.assertIsNone(self.conn.execute("SELECT delivery_scope FROM outbox").fetchone()[0])
+        self.recover()
+        self.assertEqual(self.send(), (0, 1))
+        self.assert_debt()
+
+    def test_firing_lost_answer_restart_cannot_redirect(self):
+        def lost_answer(event):
+            raise ConnectionError("lost answer")
+        with patch.object(self.sink, "deliver", side_effect=lost_answer):
+            self.assertEqual(em.deliver_pending(self.conn, self.sink, 102, "control"), (0, 1))
+        self.restart()
+        other = em.JsonlSink(Path(self.tmp.name) / "empty.jsonl")
+        self.assertEqual(em.deliver_pending(self.conn, other, 200, "control"), (0, 1))
+        self.assertFalse(other.ids())
+        self.assertEqual(em.deliver_pending(self.conn, self.sink, 300, "control"), (1, 0))
+
+    def test_open_transaction_refuses_before_any_receiver_write(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        with patch.object(self.sink, "deliver", side_effect=AssertionError("uncommitted send")):
+            with self.assertRaises(em.ProtocolError):
+                em.deliver_pending(self.conn, self.sink, 102, "control")
+        self.conn.execute("ROLLBACK")
+        self.fire()
+
+    def test_same_length_chain_reorder_refuses(self):
+        second = em.JsonlSink(Path(self.tmp.name) / "second.jsonl")
+        chain = ChainSink([self.sink, second])
+        self.fire(chain)
+        self.recover()
+        self.restart()
+        self.assertEqual(self.send(ChainSink([second, self.sink])), (0, 1))
+        self.assert_debt()
+        self.assertEqual(self.send(chain, 200), (1, 0))
+
+    def test_graph_namespace_and_endpoint_changes_refuse(self):
+        for field, replacement in [("base", "http://elsewhere.invalid"), ("ns", "https://example.invalid/other/")]:
+            with self.subTest(field=field):
+                sink = FakeGraph()
+                self.conn.execute("DELETE FROM recovery_outbox")
+                self.conn.execute("UPDATE outbox SET delivery_scope=?,recovery_queued=0",
+                                  (json.dumps(sink.delivery_scope()),))
+                self.conn.execute("UPDATE outbox SET delivered_at=102")
+                self.recover()
+                em.queue_recoveries(self.conn, self.e)
+                setattr(sink, field, replacement)
+                with (
+                    patch.object(sink, "prepare_recovery", side_effect=AssertionError("wrong graph read")),
+                    patch.object(sink, "setup", side_effect=AssertionError("wrong graph write")),
+                ):
+                    self.assertEqual(self.send(sink), (0, 1))
+                self.assertIsNone(self.conn.execute("SELECT delivered_at FROM recovery_outbox").fetchone()[0])
 
 
 PRIOR = {"event_id": "prior-id", "emitter": "control", "item": "one", "observed_at": 100}

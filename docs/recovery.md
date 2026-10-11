@@ -22,6 +22,23 @@ Queueing is limited to five records per tick, with indexes that exclude already
 reserved original rows. Firing and recovery delivery share the existing global
 budget and backoff. Existing outbox health metrics include recovery debt.
 
+Before a new firing's first external send, the outbox durably binds its receiver
+scope in a separate `delivery_scope` column, without rewriting the event payload.
+It includes the Alertmanager endpoint and emitter, graph endpoint/namespace/reaction,
+JSONL absolute resolved path, or the complete ordered chain of those bindings.
+Retries refuse changes, including a same-length chain replacement or reorder.
+Credentials are not part of the binding; credential rotation at the same endpoint
+does not change receiver identity. A changed backing receiver at an unchanged URL
+cannot be detected by this binding and requires operator provenance.
+
+Recovery and every frozen-receipt retry require that original binding to match.
+An empty newly configured receiver is never evidence that the original firing ended.
+Pre-upgrade confirmed deliveries without a binding retain unresolved recovery debt;
+there is no automatic historical-endpoint inference or migration attestation.
+An unbound original row with previous attempts may still retry its original firing
+under the legacy contract, but it remains unbound and cannot justify recovery.
+Future migration needs an independently reviewed historical-receiver attestation.
+
 Before the first close write, the complete sink chain reads and freezes the
 original identities into the recovery row. Alertmanager uses the actual prior
 label set, including its original start time, rather than today's routing

@@ -128,6 +128,9 @@ class AlertmanagerSink:
         if not self._received(event):
             raise ConnectionError(f"{event['event_id']}: accepted but not active on read-back")
 
+    def delivery_scope(self) -> dict:
+        return {"kind": "alertmanager", "base": self.base, "emitter": self.emitter_label}
+
     def _prior_alerts(self, prior: dict) -> list[dict]:
         query = urllib.parse.urlencode([
             ("filter", "event_id=" + json.dumps(prior["event_id"])),
@@ -152,7 +155,7 @@ class AlertmanagerSink:
             raise ConnectionError("multiple prior alert label sets")
         # An expired prior alert needs no fabricated label set or new POST.
         if not alerts:
-            return {"absent": True}
+            return {"absent": True, "delivery_scope": self.delivery_scope()}
         alert = alerts[0]
         if not all(isinstance(v, str) for v in alert["labels"].values()):
             raise ConnectionError("malformed prior alert labels")
@@ -162,10 +165,13 @@ class AlertmanagerSink:
         parsed = dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
         if parsed.tzinfo is None or parsed.timestamp() > event["resolved_at"]:
             raise ConnectionError("prior alert start is not authoritative")
-        return {"labels": alert["labels"], "startsAt": start}
+        return {"labels": alert["labels"], "startsAt": start,
+                "delivery_scope": self.delivery_scope()}
 
     def resolve(self, event: dict) -> None:
         receipt = event["receipt"]
+        if receipt.get("delivery_scope") != self.delivery_scope():
+            raise ConnectionError("recovery receiver scope changed")
         if not receipt.get("absent"):
             payload = {"labels": receipt["labels"], "startsAt": receipt["startsAt"],
                        "endsAt": _iso(event["resolved_at"])}
@@ -202,10 +208,16 @@ class ChainSink:
             if getattr(s, "setup_pending", lambda: False)():
                 s.setup()
 
+    def delivery_scope(self):
+        scopes = [getattr(sink, "delivery_scope", lambda: None)() for sink in self.sinks]
+        return {"kind": "chain", "sinks": scopes} if scopes and all(s is not None for s in scopes) else None
+
     def prepare_recovery(self, event: dict) -> dict:
-        return {"sinks": [sink.prepare_recovery(event) for sink in self.sinks]}
+        return {"delivery_scope": self.delivery_scope(), "sinks": [sink.prepare_recovery(event) for sink in self.sinks]}
 
     def resolve(self, event: dict) -> None:
+        if event["receipt"].get("delivery_scope") != self.delivery_scope():
+            raise ConnectionError("recovery sink chain changed")
         receipts = event["receipt"]["sinks"]
         if len(receipts) != len(self.sinks):
             raise ConnectionError("recovery sink chain changed")

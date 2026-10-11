@@ -177,6 +177,10 @@ class QuipuFiringSink:
         if not self._received(event):
             raise ConnectionError(f"{iri}: written but not found on read-back (indeterminate)")
 
+    def delivery_scope(self) -> dict:
+        return {"kind": "quipu", "base": self.base, "namespace": self.ns,
+                "reaction": self.reaction["label"]}
+
     def prepare_recovery(self, event: dict) -> dict:
         prior = event["prior"]
         if prior["emitter"] != self.reaction["label"]:
@@ -195,7 +199,8 @@ class QuipuFiringSink:
         end_predicates = {namespace + "resolvedAt",
                           "aegis:resolvedAt" if namespace == self.ns else "quechua:resolvedAt"}
         prior_ends = [_datetime_value(r["e"]) for r in rows if r.get("p") in end_predicates]
-        receipt = {"iri": iri, "predicate": namespace + "resolvedAt"}
+        receipt = {"iri": iri, "predicate": namespace + "resolvedAt",
+                   "delivery_scope": self.delivery_scope()}
         if prior_ends:
             if len(prior_ends) != 1:
                 raise ConnectionError("ambiguous prior graph recovery")
@@ -207,6 +212,8 @@ class QuipuFiringSink:
 
     def resolve(self, event: dict) -> None:
         receipt = event["receipt"]
+        if receipt.get("delivery_scope") != self.delivery_scope():
+            raise ConnectionError("recovery graph receiver scope changed")
         ended = dt.datetime.fromtimestamp(event["resolved_at"], dt.timezone.utc)
         ended = ended.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         if receipt.get("already_ended"):
