@@ -1,0 +1,4 @@
+firing delivery (1, 0) original active 1
+changed receiver False recovery delivery (1, 0) marked delivered True original active 0 current active 0
+firing delivery (1, 0) original active 1
+changed receiver True recovery delivery (1, 0) marked delivered True original active 1 current active 0

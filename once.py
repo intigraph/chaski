@@ -45,6 +45,19 @@ class RetainedSetup:
             (self.key, self.signature),
         )
 
+    def delivery_scope(self):
+        return self.receiver.delivery_scope()
+
+    def prepare_recovery(self, event):
+        return self.receiver.prepare_recovery(event)
+
+    def resolve(self, event):
+        try:
+            self.receiver.resolve(event)
+        except Exception:
+            self.conn.execute("DELETE FROM receiver_setup WHERE receiver=?", (self.key,))
+            raise
+
     def deliver(self, event):
         try:
             self.receiver.deliver(event)

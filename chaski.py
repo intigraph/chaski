@@ -360,6 +360,11 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             ttl = d["sink"]["alertmanager"].get("ttl_s", 86400)
             if type(ttl) is not int or not parse_duration(d["schedule"]) <= renew < ttl:
                 raise RuleError("renewal interval must fit schedule and finite alert TTL")
+        recovery = d.get("resolve_recovery", False)
+        if not isinstance(recovery, bool) or (recovery and ("command" in kinds or d.get("trigger") == "external")):
+            raise RuleError("recovery must be boolean and requires a verdict emitter without a command sink")
+        if recovery and d.get("resolve_event"):
+            raise RuleError("select one recovery protocol")
         e = emitter.Emitter(label=d["label"], command=list(d.get("command", [])),
                             interval_s=parse_duration(d["schedule"]), owner=d["owner"],
                             event=d.get("event", "unblocked"), timeout_s=int(d.get("timeout_s", 300)),
@@ -370,6 +375,7 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             resolve_event=d.get("resolve_event"),
                             generation_event_ids=bool(d.get("generation_event_ids", False)),
                             missing_is_from=bool(d.get("missing_is_from", False)),
+                            resolve_recovery=recovery,
                             change_driven=d.get("trigger", "schedule") == "changes",
                             externally_triggered=d.get("trigger", "schedule") == "external",
                             renew_interval_s=renew)
