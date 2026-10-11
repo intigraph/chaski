@@ -342,6 +342,14 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             need = [f for f in ("severity", "action", "condition", "comment") if not g.get(f)]
             if need:
                 raise RuleError(f"emitter {d['label']}: graph sink needs the Reaction fields {need}")
+        if "resolve_event" in d and (not isinstance(d["resolve_event"], str)
+                                      or not d["resolve_event"].strip()):
+            raise RuleError("resolve_event must be a nonempty event name")
+        for option in ("generation_event_ids", "missing_is_from"):
+            if option in d and type(d[option]) is not bool:
+                raise RuleError(f"{option} must be a boolean")
+        if d.get("missing_is_from") and not (d.get("resolve_event") and d.get("generation_event_ids")):
+            raise RuleError("complete-inventory recovery requires resolve_event and generation_event_ids")
         e = emitter.Emitter(label=d["label"], command=list(d.get("command", [])),
                             interval_s=parse_duration(d["schedule"]), owner=d["owner"],
                             event=d.get("event", "unblocked"), timeout_s=int(d.get("timeout_s", 300)),
@@ -349,6 +357,9 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             from_verdict=d.get("from", emitter.BLOCKED),
                             to_verdict=d.get("to", emitter.UNBLOCKED),
                             baseline_emits=bool(d.get("baseline_emits", False)),
+                            resolve_event=d.get("resolve_event"),
+                            generation_event_ids=bool(d.get("generation_event_ids", False)),
+                            missing_is_from=bool(d.get("missing_is_from", False)),
                             change_driven=d.get("trigger", "schedule") == "changes",
                             externally_triggered=d.get("trigger", "schedule") == "external")
         if d.get("trigger", "schedule") not in {"schedule", "changes", "external"}:

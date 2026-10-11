@@ -44,6 +44,7 @@ receiver, not this sender, the place exactly-once is decided.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import sqlite3
@@ -117,6 +118,9 @@ class Emitter:
     from_verdict: str = BLOCKED
     to_verdict: str = UNBLOCKED
     baseline_emits: bool = False
+    resolve_event: str | None = None
+    generation_event_ids: bool = False
+    missing_is_from: bool = False
     change_driven: bool = False
     externally_triggered: bool = False
 
@@ -179,11 +183,22 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
     they were.
     """
     _validate(emitter, records)
+    if emitter.missing_is_from and scope is None:
+        # Opt-in only for complete inventories of a bounded rolling window.
+        # Failed adapters never reach observe; partial scope never clears absence.
+        present_keys = {r[emitter.key] for r in records}
+        records = records + [{emitter.key: item, "verdict": emitter.from_verdict}
+                             for (item,) in conn.execute(
+                                 "SELECT item FROM verdicts WHERE emitter=? AND tracked=1",
+                                 (emitter.label,)).fetchall() if item not in present_keys]
     if scope is not None and any(r[emitter.key] not in scope for r in records):
         raise ProtocolError("adapter record outside its partial scope")
     queued: list[str] = []
 
     def emit(r: dict, item: str, generation: int) -> None:
+        if emitter.generation_event_ids:
+            r = {**r, "event_id": hashlib.sha256(
+                f"{emitter.label}:{r['event_id']}:{generation}".encode()).hexdigest()}
         payload = {
             "event_id": r["event_id"], "event": emitter.event, "emitter": emitter.label,
             "item": item, "generation": generation,
@@ -234,7 +249,7 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
                 # Same verdict, NEW transition: it went away and came back
                 # between two runs (re-blocked and unblocked again; re-verified
                 # and lapsed again). The adapter's id says so; the verdict cannot.
-                if (verdict == emitter.to_verdict and last_event is not None
+                if (not emitter.generation_event_ids and verdict == emitter.to_verdict and last_event is not None
                         and r["event_id"] != last_event):
                     generation += 2
                     conn.execute("UPDATE verdicts SET generation=? WHERE emitter=? AND item=?",
@@ -247,6 +262,26 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
                 (verdict, generation, r.get("evidence"), now, emitter.label, item))
             if last == emitter.from_verdict and verdict == emitter.to_verdict:
                 emit(r, item, generation)
+            elif (emitter.resolve_event and last == emitter.to_verdict
+                  and verdict == emitter.from_verdict and last_event):
+                # Resolve the exact frozen firing identity, never a new label set.
+                old = conn.execute("SELECT payload FROM outbox WHERE event_id=?",
+                                   (last_event,)).fetchone()
+                if old is None:
+                    raise ProtocolError("resolution has no retained firing payload")
+                payload = json.loads(old[0])
+                resolution_id = hashlib.sha256(
+                    (last_event + ":resolved").encode()).hexdigest()
+                payload.update(event_id=resolution_id, event=emitter.resolve_event,
+                               resolution_of=last_event, resolved_at=now,
+                               generation=generation)
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO outbox"
+                    " (event_id,emitter,item,generation,payload,created) VALUES (?,?,?,?,?,?)",
+                    (resolution_id, emitter.label, item, generation,
+                     json.dumps(payload, sort_keys=True), now))
+                if cur.rowcount:
+                    queued.append(resolution_id)
         for (item,) in conn.execute(
                 "SELECT item FROM verdicts WHERE emitter=? AND tracked=1", (emitter.label,)).fetchall():
             if item not in present and (scope is None or item in scope):
@@ -332,10 +367,17 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
         " AND next_attempt <= ? ORDER BY created LIMIT ?", (emitter, now, limit)).fetchall()
     ok = failed = 0
     for event_id, payload, attempts in rows:
+        event = json.loads(payload)
+        if event.get("resolution_of"):
+            prior = conn.execute("SELECT delivered_at FROM outbox WHERE event_id=?",
+                                 (event["resolution_of"],)).fetchone()
+            if prior is None or prior[0] is None:
+                # A delayed firing must never be delivered AFTER its resolution.
+                continue
         if budget is not None and not budget.try_take(now):
             break  # the rest wait for a later slot; nothing is charged to them
         try:
-            sink.deliver(json.loads(payload))
+            sink.deliver(event)
         except Exception as exc:  # noqa: BLE001 — any failure is a retry
             failed += 1
             backoff = min(MAX_BACKOFF_S, BASE_BACKOFF_S * 2 ** attempts)

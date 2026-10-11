@@ -90,7 +90,7 @@ class AlertmanagerSink:
             "alertname": self.alert["alertname"],
             "severity": self.alert["severity"],
             "emitter": self.emitter_label,
-            "event_id": event["event_id"],
+            "event_id": event.get("resolution_of") or event["event_id"],
             "item": event["item"],
         })
         kind = event.get("work_kind")
@@ -105,6 +105,8 @@ class AlertmanagerSink:
     def payload(self, event: dict) -> dict:
         start = event["observed_at"]
         end = max(start, self._clock()) + self.ttl_s
+        if event.get("resolution_of"):
+            end = event["resolved_at"]
         fields = {k: ("" if v is None else v) for k, v in event.items()}
         summary = self.alert.get("summary", "{event} for {item}").format_map(_Missing(fields))
         annotations = {"summary": summary}
@@ -114,12 +116,17 @@ class AlertmanagerSink:
                 "startsAt": _iso(start), "endsAt": _iso(end)}
 
     def _received(self, event: dict) -> bool:
-        q = urllib.parse.urlencode([("filter", f'event_id="{event["event_id"]}"'),
+        identity = event.get("resolution_of") or event["event_id"]
+        q = urllib.parse.urlencode([("filter", f'event_id="{identity}"'),
                                     ("filter", f'emitter="{self.emitter_label}"')])
         status, raw = self._request("GET", f"/api/v2/alerts?{q}")
         if status // 100 != 2 or not raw:
             raise ConnectionError(f"read-back: HTTP {status}, {len(raw)} bytes")
-        return any(a.get("labels", {}).get("event_id") == event["event_id"] for a in json.loads(raw))
+        rows = json.loads(raw)
+        if not isinstance(rows, list) or any(not isinstance(a, dict) for a in rows):
+            raise ConnectionError("read-back: malformed alert inventory")
+        active = any(a.get("labels", {}).get("event_id") == identity for a in rows)
+        return not active if event.get("resolution_of") else active
 
     def deliver(self, event: dict) -> None:
         status, _ = self._request("POST", "/api/v2/alerts", [self.payload(event)])
