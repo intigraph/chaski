@@ -4,9 +4,14 @@ Policy is a governed configuration node's single JSON description, read over
 Quipu's public query API. It is never guessed from a missing or failed read.
 Output includes hashed family identity and numerical evidence only.
 """
+
 import argparse
 import datetime as dt
 import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
 import re
 import subprocess
 import urllib.request
@@ -43,18 +48,22 @@ def policy_from_graph(server, iri):
     # The writer enforces governance; the reader also requires one directly
     # asserted ConfigSetting type before consuming its JSON configuration.
     namespace = iri.rsplit("/", 1)[0] + "/"
-    type_query = f'SELECT ?type WHERE {{ <{iri}> a ?type . FILTER(?type = <{namespace}ConfigSetting>) }}'
-    typed_request = urllib.request.Request(server.rstrip("/") + "/query",
-        data=json.dumps({"query": type_query}).encode(), headers={
-            "Content-Type": "application/json", "X-Quipu-Client": "chaski"})
+    type_query = f"SELECT ?type WHERE {{ <{iri}> a ?type . FILTER(?type = <{namespace}ConfigSetting>) }}"
+    typed_request = urllib.request.Request(
+        server.rstrip("/") + "/query",
+        data=json.dumps({"query": type_query}).encode(),
+        headers={"Content-Type": "application/json", "X-Quipu-Client": "chaski"},
+    )
     with urllib.request.urlopen(typed_request, timeout=15) as response:
         typed = json.load(response)
     if "error" in typed or typed.get("truncated") or not typed.get("rows"):
         raise ValueError("governed policy type UNKNOWN")
-    query = f'SELECT ?value WHERE {{ <{iri}> <http://www.w3.org/2000/01/rdf-schema#comment> ?value }}'
-    request = urllib.request.Request(server.rstrip("/") + "/query",
-        data=json.dumps({"query": query}).encode(), headers={
-            "Content-Type": "application/json", "X-Quipu-Client": "chaski"})
+    query = f"SELECT ?value WHERE {{ <{iri}> <http://www.w3.org/2000/01/rdf-schema#comment> ?value }}"
+    request = urllib.request.Request(
+        server.rstrip("/") + "/query",
+        data=json.dumps({"query": query}).encode(),
+        headers={"Content-Type": "application/json", "X-Quipu-Client": "chaski"},
+    )
     with urllib.request.urlopen(request, timeout=15) as response:
         data = json.load(response)
     if "error" in data or data.get("truncated") or not isinstance(data.get("rows"), list):
@@ -79,16 +88,29 @@ def verdicts(report, policy):
         identifier = family.get("id")
         count = family.get("current_window")
         tool = family.get("tool")
-        if (not isinstance(identifier, str) or not FAMILY.fullmatch(identifier)
-                or identifier in seen or type(count) is not int or count < 0
-                or not isinstance(tool, str)):
+        if (
+            not isinstance(identifier, str)
+            or not FAMILY.fullmatch(identifier)
+            or identifier in seen
+            or type(count) is not int
+            or count < 0
+            or not isinstance(tool, str)
+        ):
             raise ValueError("invalid or duplicate family")
         seen.add(identifier)
         threshold = policy.get("family_thresholds", {}).get(identifier, policy["default_threshold"])
         owner = policy.get("tool_owners", {}).get(tool, policy["default_owner"])
-        records.append({"item": identifier, "verdict": "ABOVE" if count >= threshold else "BELOW",
-                        "event_id": identifier, "owner": owner,
-                        "evidence": f"count={count}; threshold={threshold}; window={policy['window_seconds']}s; unsupported_records={report['unknown']}"})
+        records.append(
+            {
+                "item": identifier,
+                "verdict": "ABOVE" if count >= threshold else "BELOW",
+                "event_id": identifier,
+                "owner": owner,
+                "evidence": (f"count={count}; threshold={threshold}; "
+                             f"window={policy['window_seconds']}s; "
+                             f"unsupported_records={report['unknown']}"),
+            }
+        )
     return records
 
 
@@ -105,10 +127,34 @@ def main():
     # successful inventories permit the emitter's opt-in missing_is_from;
     # any adapter failure never clears an existing firing.
     start = end - dt.timedelta(days=7)
-    result = subprocess.run([args.dp, "--db", args.db, "--json", "failure-families",
-        "--since", start.isoformat(), "--until", end.isoformat(),
-        "--window", f"{policy['window_seconds']}s"], capture_output=True, text=True,
-        timeout=60, check=False)
+    # Explicit paths survive a clean child HOME. Operator remote-store config
+    # must not silently redirect this local, read-only measurement.
+    binary = shutil.which(args.dp)
+    if binary is None:
+        raise RuntimeError("desire-path executable unavailable")
+    database = str(Path(args.db).resolve())
+    with tempfile.TemporaryDirectory(prefix="failure-family-reader-") as home:
+        child_env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=home)
+        result = subprocess.run(
+            [
+                str(Path(binary).resolve()),
+                "--db",
+                database,
+                "--json",
+                "failure-families",
+                "--since",
+                start.isoformat(),
+                "--until",
+                end.isoformat(),
+                "--window",
+                f"{policy['window_seconds']}s",
+            ],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
     if result.returncode:
         # Do not echo dp stderr: it may contain an operational path or raw input.
         raise RuntimeError("desire-path aggregation failed")

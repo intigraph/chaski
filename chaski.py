@@ -350,6 +350,16 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                 raise RuleError(f"{option} must be a boolean")
         if d.get("missing_is_from") and not (d.get("resolve_event") and d.get("generation_event_ids")):
             raise RuleError("complete-inventory recovery requires resolve_event and generation_event_ids")
+        renew = d.get("renew_interval_s", 0)
+        if type(renew) is not int or renew < 0:
+            raise RuleError("renew_interval_s must be a nonnegative integer")
+        if renew and (d.get("trigger", "schedule") != "schedule" or "alertmanager" not in kinds
+                      or not d.get("resolve_event") or not d.get("generation_event_ids")):
+            raise RuleError("renewal requires a scheduled generation-bound recovering alert emitter")
+        if renew:
+            ttl = d["sink"]["alertmanager"].get("ttl_s", 86400)
+            if type(ttl) is not int or not parse_duration(d["schedule"]) <= renew < ttl:
+                raise RuleError("renewal interval must fit schedule and finite alert TTL")
         e = emitter.Emitter(label=d["label"], command=list(d.get("command", [])),
                             interval_s=parse_duration(d["schedule"]), owner=d["owner"],
                             event=d.get("event", "unblocked"), timeout_s=int(d.get("timeout_s", 300)),
@@ -361,7 +371,8 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             generation_event_ids=bool(d.get("generation_event_ids", False)),
                             missing_is_from=bool(d.get("missing_is_from", False)),
                             change_driven=d.get("trigger", "schedule") == "changes",
-                            externally_triggered=d.get("trigger", "schedule") == "external")
+                            externally_triggered=d.get("trigger", "schedule") == "external",
+                            renew_interval_s=renew)
         if d.get("trigger", "schedule") not in {"schedule", "changes", "external"}:
             raise RuleError("emitter trigger must be schedule, changes or external")
         if e.externally_triggered and d.get("baseline_emits") is not True:

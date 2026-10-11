@@ -135,6 +135,12 @@ class AlertmanagerSink:
         if not self._received(event):
             raise ConnectionError(f"{event['event_id']}: accepted but not active on read-back")
 
+    def renew(self, event: dict) -> None:
+        """Receipt-backed same-label lease refresh; no new domain event."""
+        if event.get("resolution_of"):
+            raise ValueError("cannot renew recovery")
+        self.deliver(event)
+
 
 class _Missing(dict):
     """str.format_map that leaves an unknown field visible instead of raising."""
@@ -165,3 +171,10 @@ class ChainSink:
     def deliver(self, event: dict) -> None:
         for s in self.sinks:
             s.deliver(event)
+
+    def renew(self, event: dict) -> None:
+        recipients = [s for s in self.sinks if callable(getattr(s, "renew", None))]
+        if not recipients:
+            raise ValueError("no lease-aware recipient")
+        for sink in recipients:
+            sink.renew(event)
