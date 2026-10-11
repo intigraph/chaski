@@ -309,7 +309,7 @@ def queue_recoveries(conn: sqlite3.Connection, emitter: Emitter, limit: int = DE
     Called inside observation's transaction and on later ticks, so a delivery
     receipt arriving after recovery is not lost. Original rows are preserved.
     """
-    if not emitter.resolve_recovery:
+    if not getattr(emitter, "resolve_recovery", False):
         return []
     if type(limit) is not int or not 1 <= limit <= DELIVER_PER_TICK:
         raise ProtocolError("recovery batch limit outside its bounded contract")

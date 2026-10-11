@@ -11,6 +11,10 @@ previous firing with a confirmed delivery receipt is eligible. Never-delivered
 and indeterminate sends remain in their original outbox; if their exact original
 receipt arrives later, the recorded recovery can then close that identity.
 
+Enabling recovery forces one fresh complete key discovery. That verified discovery
+can also recover a previously delivered identity retired before upgrade. Failed
+discovery creates no recovery; the normal disabled subscription digest is unchanged.
+
 Recovery has its own durable `recovery_outbox`. Original firing payloads and
 receipts remain unchanged. A unique prior-event key and an atomic reservation
 make repeated observations, outer cursor transactions and restart replay safe.

@@ -375,3 +375,49 @@ class QueueCompatibility(unittest.TestCase):
             path.write_text(yaml.safe_dump(config))
             with self.assertRaises(chaski.RuleError):
                 chaski.load_emitters(path)
+
+class LegacyReconcile(unittest.TestCase):
+    setUp = Recovery.setUp
+    pending = Recovery.pending
+    deliver = Recovery.deliver
+
+    def runner(self):
+        import incremental
+        self.conn.executescript(incremental.SCHEMA)
+        runner = object.__new__(incremental.ChangeRunner)
+        runner.conn, runner.emitter = self.conn, self.e
+        runner.subscription = {'version': 1, 'graphs': [], 'attributes': [], 'types': []}
+        return runner
+
+    def test_enabling_recovery_invalidates_daily_discovery_without_changing_off_digest(self):
+        import hashlib
+        runner = self.runner()
+        self.e.resolve_recovery = False
+        runner._reconcile_on_new_subscription(self.conn, self.e.label)
+        old_digest = hashlib.sha256(json.dumps(runner.subscription, sort_keys=True).encode()).hexdigest()
+        self.assertEqual(self.conn.execute('SELECT digest FROM adapter_subscription').fetchone()[0], old_digest)
+        self.conn.execute('INSERT INTO adapter_reconcile VALUES (?,?)', (self.e.label, 100))
+        self.e.resolve_recovery = True
+        runner._reconcile_on_new_subscription(self.conn, self.e.label)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM adapter_reconcile').fetchone()[0], 0)
+        self.assertNotEqual(self.conn.execute('SELECT digest FROM adapter_subscription').fetchone()[0], old_digest)
+
+    def test_fresh_complete_discovery_can_recover_preupgrade_untracked_identity(self):
+        self.deliver()
+        self.conn.execute("UPDATE verdicts SET tracked=0 WHERE item='a'")
+        runner = self.runner()
+        with patch('incremental.call', return_value={'version': 1, 'items': ['b']}):
+            runner.reconcile(103)
+        self.assertEqual([json.loads(r[0])['item'] for r in self.pending()], ['a'])
+        self.assertEqual(self.conn.execute("SELECT verdict,tracked FROM verdicts WHERE item='b'").fetchone(),
+                         ('UNBLOCKED', 1))
+
+    def test_unknown_discovery_does_not_close_a_legacy_untracked_identity(self):
+        self.deliver()
+        self.conn.execute("UPDATE verdicts SET tracked=0 WHERE item='a'")
+        runner = self.runner()
+        with patch('incremental.call', side_effect=em.ProtocolError('discovery UNKNOWN')):
+            with self.assertRaises(em.ProtocolError):
+                runner.reconcile(103)
+        self.assertEqual(self.pending(), [])
+        self.assertIsNone(self.conn.execute("SELECT recovery_at FROM verdicts WHERE item='a'").fetchone()[0])

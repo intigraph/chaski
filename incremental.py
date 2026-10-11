@@ -54,6 +54,7 @@ def strings(value):
 
 class ChangeRunner(Runner):
     def __init__(self, emitter, conn, sink, budget=None):
+        self.emitter = emitter
         conn.executescript(SCHEMA)
         self.subscription = call(emitter)
         self.attributes = strings(self.subscription.get("attributes"))
@@ -74,7 +75,10 @@ class ChangeRunner(Runner):
         reconcile makes the next tick rediscover every candidate; the
         verdict/outbox state keeps that idempotent. Also true on the first start
         after this change, where no digest has been stored yet."""
-        digest = hashlib.sha256(json.dumps(self.subscription, sort_keys=True).encode()).hexdigest()
+        definition = self.subscription
+        if getattr(self.emitter, "resolve_recovery", False):
+            definition = {"subscription": definition, "resolve_recovery": True}
+        digest = hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
         row = conn.execute("SELECT digest FROM adapter_subscription WHERE emitter=?", (label,)).fetchone()
         if row and row[0] == digest:
             return
@@ -100,8 +104,10 @@ class ChangeRunner(Runner):
         label = self.emitter.label
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            tracked = {r[0] for r in self.conn.execute("SELECT item FROM verdicts WHERE emitter=? AND tracked=1",
-                                                       (label,))}
+            tracked = {r[0] for r in self.conn.execute(
+                "SELECT item FROM verdicts WHERE emitter=? AND"
+                " (tracked=1 OR (? AND recovery_at IS NULL))",
+                (label, getattr(self.emitter, "resolve_recovery", False)))}
             observe(self.conn, self.emitter, [], now, scope=tracked - items)
             self.conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES (?,?,?,2)"
                                   " ON CONFLICT(emitter,item)"
@@ -179,7 +185,7 @@ class ChangeRunner(Runner):
                 LOG.warning("incremental emitter %s UNKNOWN (work retained): %s", self.emitter.label, exc)
         self.queued_total += len(queue_recoveries(self.conn, self.emitter))
         deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK,
-                        resolve_recovery=self.emitter.resolve_recovery)
+                        resolve_recovery=getattr(self.emitter, "resolve_recovery", False))
         self._publish()
 
     def _publish(self):
