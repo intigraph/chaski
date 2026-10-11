@@ -342,6 +342,9 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             need = [f for f in ("severity", "action", "condition", "comment") if not g.get(f)]
             if need:
                 raise RuleError(f"emitter {d['label']}: graph sink needs the Reaction fields {need}")
+        recovery = d.get("resolve_recovery", False)
+        if not isinstance(recovery, bool) or (recovery and ("command" in kinds or d.get("trigger") == "external")):
+            raise RuleError("recovery must be boolean and requires a verdict emitter without a command sink")
         e = emitter.Emitter(label=d["label"], command=list(d.get("command", [])),
                             interval_s=parse_duration(d["schedule"]), owner=d["owner"],
                             event=d.get("event", "unblocked"), timeout_s=int(d.get("timeout_s", 300)),
@@ -349,6 +352,7 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             from_verdict=d.get("from", emitter.BLOCKED),
                             to_verdict=d.get("to", emitter.UNBLOCKED),
                             baseline_emits=bool(d.get("baseline_emits", False)),
+                            resolve_recovery=recovery,
                             change_driven=d.get("trigger", "schedule") == "changes",
                             externally_triggered=d.get("trigger", "schedule") == "external")
         if d.get("trigger", "schedule") not in {"schedule", "changes", "external"}:

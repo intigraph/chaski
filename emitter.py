@@ -43,6 +43,7 @@ receiver, not this sender, the place exactly-once is decided.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -88,6 +89,21 @@ CREATE TABLE IF NOT EXISTS outbox (
     next_attempt REAL NOT NULL DEFAULT 0,
     last_error   TEXT
 );
+CREATE TABLE IF NOT EXISTS recovery_outbox (
+    event_id TEXT PRIMARY KEY,
+    emitter TEXT NOT NULL,
+    item TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    created REAL NOT NULL,
+    prior_event TEXT NOT NULL,
+    delivered_at REAL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0,
+    last_error TEXT,
+    UNIQUE (emitter, prior_event)
+);
+
 """
 
 
@@ -119,6 +135,7 @@ class Emitter:
     baseline_emits: bool = False
     change_driven: bool = False
     externally_triggered: bool = False
+    resolve_recovery: bool = False
 
     @property
     def verdicts(self) -> set[str]:
@@ -132,6 +149,14 @@ def connect(path: Path | str) -> sqlite3.Connection:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(verdicts)")}
     if "last_event" not in cols:  # a state file from before last_event existed
         conn.execute("ALTER TABLE verdicts ADD COLUMN last_event TEXT")
+    for table, column, kind in (("verdicts", "recovery_at", "REAL"),
+                                ("outbox", "recovery_queued", "INTEGER NOT NULL DEFAULT 0"),
+                                ("outbox", "delivery_scope", "TEXT")):
+        if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.execute("CREATE INDEX IF NOT EXISTS outbox_recovery_candidates ON outbox(emitter,item,created,event_id)"
+                 " WHERE recovery_queued=0 AND delivered_at IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS verdict_recovery_candidates ON verdicts(emitter,recovery_at)")
     return conn
 
 
@@ -252,10 +277,78 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
             if item not in present and (scope is None or item in scope):
                 conn.execute("UPDATE verdicts SET tracked=0, updated=? WHERE emitter=? AND item=?",
                              (now, emitter.label, item))
+        if emitter.resolve_recovery:
+            # A recovery clock is fixed at its first verified observation. An
+            # UNKNOWN record retains the last known state without inventing one.
+            for r in records:
+                if r["verdict"] != UNKNOWN:
+                    if r["verdict"] == emitter.to_verdict:
+                        conn.execute("UPDATE verdicts SET recovery_at=NULL WHERE emitter=? AND item=?",
+                                     (emitter.label, r[emitter.key]))
+                    else:
+                        conn.execute("UPDATE verdicts SET recovery_at=COALESCE(recovery_at,?)"
+                                     " WHERE emitter=? AND item=?", (now, emitter.label, r[emitter.key]))
+            if scope is None:
+                conn.execute("UPDATE verdicts SET recovery_at=COALESCE(recovery_at,?)"
+                             " WHERE emitter=? AND tracked=0", (now, emitter.label))
+            else:
+                conn.executemany("UPDATE verdicts SET recovery_at=COALESCE(recovery_at,?)"
+                                 " WHERE emitter=? AND item=? AND tracked=0",
+                                 [(now, emitter.label, item) for item in scope])
+            queued.extend(queue_recoveries(conn, emitter))
         conn.execute("RELEASE observation")
     except BaseException:
         conn.execute("ROLLBACK TO observation")
         conn.execute("RELEASE observation")
+        raise
+    return queued
+
+
+def queue_recoveries(conn: sqlite3.Connection, emitter: Emitter, limit: int = DELIVER_PER_TICK) -> list[str]:
+    """Bounded, idempotent recovery of confirmed prior deliveries only.
+
+    Called inside observation's transaction and on later ticks, so a delivery
+    receipt arriving after recovery is not lost. Original rows are preserved.
+    """
+    if not getattr(emitter, "resolve_recovery", False):
+        return []
+    if type(limit) is not int or not 1 <= limit <= DELIVER_PER_TICK:
+        raise ProtocolError("recovery batch limit outside its bounded contract")
+    conn.execute("SAVEPOINT recovery_queue")
+    try:
+        rows = conn.execute(
+            "SELECT o.event_id,o.item,o.payload,v.generation,v.recovery_at,o.delivery_scope FROM outbox o"
+            " JOIN verdicts v ON v.emitter=o.emitter AND v.item=o.item"
+            " LEFT JOIN recovery_outbox r ON r.emitter=o.emitter AND r.prior_event=o.event_id"
+            " WHERE o.emitter=? AND o.recovery_queued=0 AND o.delivered_at IS NOT NULL"
+            " AND v.recovery_at IS NOT NULL AND (v.tracked=0 OR v.verdict!=?)"
+            " AND r.event_id IS NULL ORDER BY o.created,o.event_id LIMIT ?",
+            (emitter.label, emitter.to_verdict, limit)).fetchall()
+        queued = []
+        for prior_id, item, raw, generation, recovered_at, scope in rows:
+            identity = json.dumps([emitter.label, prior_id], separators=(",", ":"))
+            event_id = "resolved-" + hashlib.sha256(identity.encode()).hexdigest()
+            payload = {"event_id": event_id, "event": "resolved", "emitter": emitter.label,
+                       "item": item, "generation": generation, "observed_at": recovered_at,
+                       "resolved_at": recovered_at, "prior": json.loads(raw),
+                       "delivery_scope": json.loads(scope) if scope is not None else None}
+            cur = conn.execute("INSERT OR IGNORE INTO recovery_outbox"
+                               " (event_id,emitter,item,generation,payload,created,prior_event) VALUES (?,?,?,?,?,?,?)",
+                               (event_id, emitter.label, item, generation,
+                                json.dumps(payload, sort_keys=True), recovered_at, prior_id))
+            if not cur.rowcount:
+                existing = conn.execute("SELECT emitter,prior_event FROM recovery_outbox WHERE event_id=?",
+                                        (event_id,)).fetchone()
+                if existing != (emitter.label, prior_id):
+                    raise ProtocolError("recovery event identity collision")
+            conn.execute("UPDATE outbox SET recovery_queued=1 WHERE event_id=? AND emitter=?",
+                         (prior_id, emitter.label))
+            if cur.rowcount:
+                queued.append(event_id)
+        conn.execute("RELEASE recovery_queue")
+    except BaseException:
+        conn.execute("ROLLBACK TO recovery_queue")
+        conn.execute("RELEASE recovery_queue")
         raise
     return queued
 
@@ -280,6 +373,18 @@ class JsonlSink:
         if not self.path.exists():
             return set()
         return {json.loads(line)["event_id"] for line in self.path.read_text().splitlines() if line}
+
+    def delivery_scope(self) -> dict:
+        return {"kind": "jsonl", "path": str(self.path.resolve())}
+
+    def prepare_recovery(self, event: dict) -> dict:
+        return {"prior_event_id": event["prior"]["event_id"],
+                "delivery_scope": self.delivery_scope()}
+
+    def resolve(self, event: dict) -> None:
+        if event["receipt"].get("delivery_scope") != self.delivery_scope():
+            raise ConnectionError("recovery receiver scope changed")
+        self.deliver(event)
 
     def deliver(self, event: dict) -> None:
         if event["event_id"] in self.ids():
@@ -309,17 +414,31 @@ class WriteBudget:
 
 
 def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: str,
-                    budget: WriteBudget | None = None, limit: int = 50) -> tuple[int, int]:
+                    budget: WriteBudget | None = None, limit: int = 50,
+                    resolve_recovery: bool = False) -> tuple[int, int]:
     """Send THIS emitter's due outbox rows to THIS emitter's sink, spending one
     budget slot per write. Returns (delivered, failed).
 
     Scoped by emitter because runners share one state database: an unscoped
     pass would hand another emitter's events to this sink and checkpoint them
     there, so their own sink would never see them."""
+    if conn.in_transaction:
+        raise ProtocolError("delivery requires committed observation and receiver binding")
     # A sink may owe a one-time setup write (the graph sink's Reaction). It
     # takes its own budget slot, never piggy-backing on an event's.
     setup = getattr(sink, "setup_pending", None)
+    setup_allowed = not resolve_recovery
     if setup is not None and setup():
+        first_firing = conn.execute(
+            "SELECT delivery_scope FROM outbox WHERE emitter=? AND delivered_at IS NULL"
+            " AND next_attempt<=? ORDER BY created LIMIT 1", (emitter, now)).fetchone()
+        if first_firing is not None:
+            scope_fn = getattr(sink, "delivery_scope", None)
+            scope = scope_fn() if scope_fn is not None else None
+            setup_allowed = first_firing[0] is None or json.loads(first_firing[0]) == scope
+    # Recoveries only read/close an existing firing; no setup write is needed.
+    # A redirected bound firing must not set up the changed receiver either.
+    if setup is not None and setup() and setup_allowed:
         if budget is not None and not budget.try_take(now):
             return 0, 0
         try:
@@ -327,26 +446,57 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
         except Exception as exc:  # noqa: BLE001 — retried next pass, no row is charged
             LOG.warning("sink setup for %s failed: %s", emitter, exc)
             return 0, 1
-    rows = conn.execute(
-        "SELECT event_id, payload, attempts FROM outbox WHERE emitter = ? AND delivered_at IS NULL"
-        " AND next_attempt <= ? ORDER BY created LIMIT ?", (emitter, now, limit)).fetchall()
+    tables = ("outbox", "recovery_outbox") if resolve_recovery else ("outbox",)
+    query = " UNION ALL ".join(
+        f"SELECT event_id,payload,attempts,created,'{table}' AS source_table FROM {table}"
+        " WHERE emitter=? AND delivered_at IS NULL AND next_attempt<=?" for table in tables)
+    args = [value for _ in tables for value in (emitter, now)] + [limit]
+    rows = conn.execute(query + " ORDER BY created LIMIT ?", args).fetchall()
     ok = failed = 0
-    for event_id, payload, attempts in rows:
+    for event_id, payload, attempts, _created, table in rows:
         if budget is not None and not budget.try_take(now):
             break  # the rest wait for a later slot; nothing is charged to them
         try:
-            sink.deliver(json.loads(payload))
+            event = json.loads(payload)
+            scope_fn = getattr(sink, "delivery_scope", None)
+            scope = scope_fn() if scope_fn is not None else None
+            if "prior" in event:
+                if scope is None or event.get("delivery_scope") != scope:
+                    raise ProtocolError("prior delivery receiver scope changed or unproven")
+                if "receipt" in event and event["receipt"].get("delivery_scope") != scope:
+                    raise ProtocolError("frozen recovery receiver scope changed or unproven")
+                prepare = getattr(sink, "prepare_recovery", None)
+                if prepare is None:
+                    raise ProtocolError("sink does not support exact recovery")
+                if "receipt" not in event:
+                    event["receipt"] = {**prepare(event), "delivery_scope": scope}
+                    # Freeze every sink's prior identity BEFORE the first write.
+                    payload = json.dumps(event, sort_keys=True)
+                    conn.execute(f"UPDATE {table} SET payload=? WHERE event_id=? AND emitter=?",
+                                 (payload, event_id, emitter))
+                sink.resolve(event)
+            else:
+                bound = conn.execute("SELECT delivery_scope FROM outbox WHERE event_id=? AND emitter=?",
+                                     (event_id, emitter)).fetchone()[0]
+                if bound is not None and json.loads(bound) != scope:
+                    raise ProtocolError("firing receiver scope changed")
+                if bound is None and scope is not None and attempts == 0:
+                    # Autocommit before any external write; a lost answer/restart
+                    # retries this receiver only. Legacy attempts stay unbound.
+                    conn.execute("UPDATE outbox SET delivery_scope=? WHERE event_id=? AND emitter=?",
+                                 (json.dumps(scope, sort_keys=True), event_id, emitter))
+                sink.deliver(event)
         except Exception as exc:  # noqa: BLE001 — any failure is a retry
             failed += 1
             backoff = min(MAX_BACKOFF_S, BASE_BACKOFF_S * 2 ** attempts)
-            conn.execute("UPDATE outbox SET attempts=attempts+1, next_attempt=?, last_error=?"
+            conn.execute(f"UPDATE {table} SET attempts=attempts+1, next_attempt=?, last_error=?"
                          " WHERE event_id=? AND emitter=?",
                          (now + backoff, str(exc)[:300], event_id, emitter))
             LOG.warning("delivery of %s failed (attempt %d): %s", event_id, attempts + 1, exc)
             continue
         # Only now, after the sink returned on a receipt. A crash before this
         # line re-sends the same id next time; the receiver deduplicates.
-        conn.execute("UPDATE outbox SET delivered_at=?, attempts=attempts+1 WHERE event_id=? AND emitter=?",
+        conn.execute(f"UPDATE {table} SET delivered_at=?, attempts=attempts+1 WHERE event_id=? AND emitter=?",
                      (now, event_id, emitter))
         ok += 1
     return ok, failed
@@ -382,16 +532,21 @@ class Runner:
             except Exception as exc:  # noqa: BLE001 — a failed run is UNKNOWN for every item
                 self.runs["unknown"] += 1
                 LOG.warning("emitter %s UNKNOWN (no verdict changed): %s", self.emitter.label, exc)
-        deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK)
+        self.queued_total += len(queue_recoveries(self.conn, self.emitter))
+        deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK,
+                        resolve_recovery=self.emitter.resolve_recovery)
         self._publish()
 
     def _publish(self) -> None:
         pending, oldest = self.conn.execute(
-            "SELECT COUNT(*), MIN(created) FROM outbox WHERE emitter=? AND delivered_at IS NULL",
-            (self.emitter.label,)).fetchone()
+            "SELECT COUNT(*), MIN(created) FROM ("
+            " SELECT created FROM outbox WHERE emitter=? AND delivered_at IS NULL"
+            " UNION ALL SELECT created FROM recovery_outbox WHERE emitter=? AND delivered_at IS NULL)",
+            (self.emitter.label, self.emitter.label)).fetchone()
         delivered = self.conn.execute(
-            "SELECT COUNT(*) FROM outbox WHERE emitter=? AND delivered_at IS NOT NULL",
-            (self.emitter.label,)).fetchone()[0]
+            "SELECT (SELECT COUNT(*) FROM outbox WHERE emitter=? AND delivered_at IS NOT NULL)"
+            " + (SELECT COUNT(*) FROM recovery_outbox WHERE emitter=? AND delivered_at IS NOT NULL)",
+            (self.emitter.label, self.emitter.label)).fetchone()[0]
         snap = {"runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
                 "oldest_created": oldest, "delivered": delivered}
