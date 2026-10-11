@@ -71,6 +71,17 @@ def _lit(s: str) -> str:
     return json.dumps(s)  # a valid Turtle string literal: quotes and escapes
 
 
+def _datetime_value(value) -> str:
+    if (not isinstance(value, dict) or set(value) != {"value", "datatype"} or
+            value["datatype"] not in {"xsd:dateTime", "http://www.w3.org/2001/XMLSchema#dateTime"} or
+            not isinstance(value["value"], str)):
+        raise ConnectionError("graph recovery is not an explicit typed dateTime")
+    parsed = dt.datetime.fromisoformat(value["value"].replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ConnectionError("graph recovery has no timezone")
+    return value["value"]
+
+
 class QuipuFiringSink:
     """`reaction` carries the aegis:Reaction fields for this emitter:
     label, schedule, condition, severity, action (list), owner, comment."""
@@ -165,3 +176,49 @@ class QuipuFiringSink:
         self._knot(self.firing_turtle(event), iri)
         if not self._received(event):
             raise ConnectionError(f"{iri}: written but not found on read-back (indeterminate)")
+
+    def prepare_recovery(self, event: dict) -> dict:
+        prior = event["prior"]
+        if prior["emitter"] != self.reaction["label"]:
+            raise ConnectionError("prior graph reaction identity changed")
+        iri = firing_iri(prior["emitter"], prior["event_id"], self.ns)
+        out = self._post("/query", {"query": f"SELECT ?p ?e WHERE {{ <{iri}> ?p ?e }}"})
+        rows = out.get("rows")
+        if not isinstance(rows, list):
+            raise ConnectionError("prior firing read-back unavailable")
+        predicates = {self.ns + "eventId": self.ns, "aegis:eventId": self.ns,
+                      QUECHUA_NS + "eventId": QUECHUA_NS, "quechua:eventId": QUECHUA_NS}
+        matches = [r for r in rows if r.get("p") in predicates]
+        if len(matches) != 1 or matches[0].get("e") != prior["event_id"]:
+            raise ConnectionError("missing or ambiguous prior graph firing")
+        namespace = predicates[matches[0]["p"]]
+        end_predicates = {namespace + "resolvedAt",
+                          "aegis:resolvedAt" if namespace == self.ns else "quechua:resolvedAt"}
+        prior_ends = [_datetime_value(r["e"]) for r in rows if r.get("p") in end_predicates]
+        receipt = {"iri": iri, "predicate": namespace + "resolvedAt"}
+        if prior_ends:
+            if len(prior_ends) != 1:
+                raise ConnectionError("ambiguous prior graph recovery")
+            ended = dt.datetime.fromisoformat(prior_ends[0].replace("Z", "+00:00"))
+            if ended.tzinfo is None or ended.timestamp() > event["resolved_at"]:
+                raise ConnectionError("prior graph recovery is not authoritative")
+            receipt["already_ended"] = prior_ends[0]
+        return receipt
+
+    def resolve(self, event: dict) -> None:
+        receipt = event["receipt"]
+        ended = dt.datetime.fromtimestamp(event["resolved_at"], dt.timezone.utc)
+        ended = ended.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        if receipt.get("already_ended"):
+            ended = receipt["already_ended"]
+        # Only this predicate changes; the firing, start and provenance remain.
+        else:
+            out = self._post("/set", {"entity": receipt["iri"], "predicate": receipt["predicate"],
+                                  "value": {"value": ended, "datatype": "http://www.w3.org/2001/XMLSchema#dateTime"},
+                                  "actor": "chaski", "source": "chaski:recovery:" + event["event_id"]})
+            if type(out.get("asserted")) is not int or out["asserted"] not in {0, 1}:
+                raise ConnectionError("graph recovery write indeterminate")
+        query = f"SELECT ?e WHERE {{ <{receipt['iri']}> <{receipt['predicate']}> ?e }}"
+        rows = self._post("/query", {"query": query}).get("rows")
+        if not isinstance(rows, list) or len(rows) != 1 or _datetime_value(rows[0].get("e")) != ended:
+            raise ConnectionError("graph recovery not exact on read-back")

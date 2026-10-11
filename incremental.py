@@ -14,7 +14,7 @@ import math
 import subprocess
 import urllib.parse
 
-from emitter import DELIVER_PER_TICK, ProtocolError, Runner, deliver_pending, observe
+from emitter import DELIVER_PER_TICK, ProtocolError, Runner, deliver_pending, observe, queue_recoveries
 
 LOG = logging.getLogger("chaski.changes")
 TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
@@ -177,7 +177,9 @@ class ChangeRunner(Runner):
                 self.runs["unknown"] += 1
                 self.retry_at = now + 60
                 LOG.warning("incremental emitter %s UNKNOWN (work retained): %s", self.emitter.label, exc)
-        deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK)
+        self.queued_total += len(queue_recoveries(self.conn, self.emitter))
+        deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK,
+                        resolve_recovery=self.emitter.resolve_recovery)
         self._publish()
 
     def _publish(self):

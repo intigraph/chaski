@@ -128,6 +128,53 @@ class AlertmanagerSink:
         if not self._received(event):
             raise ConnectionError(f"{event['event_id']}: accepted but not active on read-back")
 
+    def _prior_alerts(self, prior: dict) -> list[dict]:
+        query = urllib.parse.urlencode([
+            ("filter", "event_id=" + json.dumps(prior["event_id"])),
+            ("filter", "emitter=" + json.dumps(prior["emitter"]))])
+        status, raw = self._request("GET", "/api/v2/alerts?" + query)
+        if status // 100 != 2 or not raw:
+            raise ConnectionError("recovery read-back unavailable")
+        alerts = json.loads(raw)
+        if not isinstance(alerts, list) or any(not isinstance(a, dict) or
+                not isinstance(a.get("labels"), dict) for a in alerts):
+            raise ConnectionError("malformed recovery read-back")
+        for alert in alerts:
+            labels = alert["labels"]
+            if (labels.get("event_id") != prior["event_id"] or
+                    labels.get("emitter") != prior["emitter"] or labels.get("item") != prior["item"]):
+                raise ConnectionError("ambiguous prior alert identity")
+        return alerts
+
+    def prepare_recovery(self, event: dict) -> dict:
+        alerts = self._prior_alerts(event["prior"])
+        if len(alerts) > 1:
+            raise ConnectionError("multiple prior alert label sets")
+        # An expired prior alert needs no fabricated label set or new POST.
+        if not alerts:
+            return {"absent": True}
+        alert = alerts[0]
+        if not all(isinstance(v, str) for v in alert["labels"].values()):
+            raise ConnectionError("malformed prior alert labels")
+        start = alert.get("startsAt")
+        if not isinstance(start, str):
+            raise ConnectionError("missing prior alert start")
+        parsed = dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.timestamp() > event["resolved_at"]:
+            raise ConnectionError("prior alert start is not authoritative")
+        return {"labels": alert["labels"], "startsAt": start}
+
+    def resolve(self, event: dict) -> None:
+        receipt = event["receipt"]
+        if not receipt.get("absent"):
+            payload = {"labels": receipt["labels"], "startsAt": receipt["startsAt"],
+                       "endsAt": _iso(event["resolved_at"])}
+            status, _ = self._request("POST", "/api/v2/alerts", [payload])
+            if status // 100 != 2:
+                raise ConnectionError("recovery POST not accepted")
+        if self._prior_alerts(event["prior"]):
+            raise ConnectionError("prior alert still active after recovery")
+
 
 class _Missing(dict):
     """str.format_map that leaves an unknown field visible instead of raising."""
@@ -154,6 +201,16 @@ class ChainSink:
         for s in self.sinks:
             if getattr(s, "setup_pending", lambda: False)():
                 s.setup()
+
+    def prepare_recovery(self, event: dict) -> dict:
+        return {"sinks": [sink.prepare_recovery(event) for sink in self.sinks]}
+
+    def resolve(self, event: dict) -> None:
+        receipts = event["receipt"]["sinks"]
+        if len(receipts) != len(self.sinks):
+            raise ConnectionError("recovery sink chain changed")
+        for sink, receipt in zip(self.sinks, receipts):
+            sink.resolve({**event, "receipt": receipt})
 
     def deliver(self, event: dict) -> None:
         for s in self.sinks:
