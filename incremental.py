@@ -214,6 +214,8 @@ class ChangeFeed:
         self.lag = -1
         self.errors = 0
         self.ready = False
+        self.cursor_tx = -1  # UNKNOWN until a durable page commit is observed
+        self.poll_events_received = 0
 
     def poll(self):
         # Bounded catch-up in one poll: a normal burst need not wait another
@@ -230,7 +232,12 @@ class ChangeFeed:
             since = row[0] if row else 9223372036854775807
             query = urllib.parse.urlencode({"since": since, "capture": "old_and_new_values", "limit": 100})
             out = self.quipu._request("GET", "/changes?" + query)
-            return self.accept_page(out, since)
+            more = self.accept_page(out, since)
+            # Count poll records only after admission/commit; the initial
+            # tail bootstrap discards records and is not a fallback delivery.
+            if since != 9223372036854775807:
+                self.poll_events_received += len(out["records"])
+            return more
         except Exception as exc:  # noqa: BLE001
             self.errors += 1
             LOG.warning("change feed UNKNOWN (cursor retained): %s", exc)
@@ -274,5 +281,6 @@ class ChangeFeed:
             self.conn.execute("ROLLBACK")
             raise
         self.lag = watermark - cursor
+        self.cursor_tx = cursor
         self.ready = True
         return row is not None and cursor > since and cursor < watermark

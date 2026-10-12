@@ -32,6 +32,8 @@ def test_invalid_or_partial_frame_refuses(raw):
 def test_delivery_failure_reconnects_from_applied_cursor_only():
     stream = object.__new__(ChangeStream)
     stream.cursor = 10
+    stream.received = 0
+    stream.logged_first_commit = False
     stream.wakeup = threading.Event()
     stream.pending = queue.Queue(maxsize=1)
     done = threading.Event()
@@ -41,12 +43,14 @@ def test_delivery_failure_reconnects_from_applied_cursor_only():
     feed = SimpleNamespace(accept_page=refuse, errors=0)
     stream.pump(feed)
     assert stream.cursor == 10 and done.is_set() and feed.errors == 1
+    assert stream.received == 1
     done = threading.Event()
     stream.pending.put((11, {'next_tx': 11}, done))
     applied = []
     feed.accept_page = lambda page, since, stream_id: applied.append((since,stream_id))
     stream.pump(feed)
     assert applied == [(10,11)] and stream.cursor == 11 and done.is_set()
+    assert stream.received == 2
 
 
 def test_stream_reactor_idle_never_polls_change_feed(tmp_path):
@@ -66,6 +70,8 @@ def test_stream_reactor_idle_never_polls_change_feed(tmp_path):
 def queued_stream(count):
     stream = object.__new__(ChangeStream)
     stream.cursor = 0
+    stream.received = 0
+    stream.logged_first_commit = False
     stream.pending = queue.Queue(maxsize=1)
     stream.wakeup = threading.Event()
     halt = threading.Event()

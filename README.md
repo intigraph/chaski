@@ -37,6 +37,20 @@ alert, so alerts resolve on their own.
 
 ## Status
 
+Committed-change stream progress is exported as three scalar metrics:
+`chaski_changes_stream_events_received_total` counts received SSE pages,
+including refused or replayed deliveries; it does not prove processing.
+`chaski_changes_cursor_offset` reports the last committed **transaction ID**,
+not the legacy `/events` offset, and is `-1` until a commit is observed.
+`chaski_changes_poll_fallback_events_total` counts records admitted through
+polling, including startup catch-up for an existing cursor. The initial
+tail bootstrap discards records and adds nothing to that counter.
+Scrapes read in-memory values without touching SQLite or querying the server.
+Counters reset on restart. Compare two scrapes from the same process: received
+pages plus an advancing committed cursor and no additional poll records prove
+stream progress. One INFO line per process names the first committed stream
+transaction; later transactions use counters rather than per-page log traffic.
+
 Stage 1: a read-only skeleton, with the event tail, schedule rules, metrics and
 the canary. No writes and no pages yet.
 

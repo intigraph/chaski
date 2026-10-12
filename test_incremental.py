@@ -301,6 +301,8 @@ def test_reactor_backlog_drains_event_woken_bounded_turns(setup, tmp_path, monke
     feed = inc.ChangeFeed(Feed([]), [runner])
     stream = object.__new__(ChangeStream)
     stream.cursor = 0
+    stream.received = 0
+    stream.logged_first_commit = False
     stream.pending = queue.Queue(maxsize=1)
     stream.wakeup = threading.Event()
 
