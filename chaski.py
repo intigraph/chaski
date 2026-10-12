@@ -278,14 +278,17 @@ class Reactor:
             if self.change_feed is not None:
                 lines += [f"chaski_changes_lag_transactions {self.change_feed.lag}",
                           f"chaski_changes_errors_total {self.change_feed.errors}"]
-                lines += ["# HELP chaski_changes_cursor_offset Durable transaction cursor; -1 means UNKNOWN. Not an /events offset.",
+                lines += ["# HELP chaski_changes_cursor_offset Durable transaction cursor; "
+                          "-1 means UNKNOWN. Not an /events offset.",
                           "# TYPE chaski_changes_cursor_offset gauge",
                           f"chaski_changes_cursor_offset {self.change_feed.cursor_tx}",
-                          "# HELP chaski_changes_poll_fallback_events_total Change records committed through polling, excluding initial tail bootstrap.",
+                          "# HELP chaski_changes_poll_fallback_events_total Change records committed "
+                          "through polling, excluding initial tail bootstrap.",
                           "# TYPE chaski_changes_poll_fallback_events_total counter",
                           f"chaski_changes_poll_fallback_events_total {self.change_feed.poll_events_received}"]
             if self.change_stream is not None:
-                lines += ["# HELP chaski_changes_stream_events_received_total SSE change pages received by the reactor, including refused and replayed deliveries; not commit acknowledgements.",
+                lines += ["# HELP chaski_changes_stream_events_received_total SSE change pages received "
+                          "by the reactor, including refused and replayed deliveries; not commit acknowledgements.",
                           "# TYPE chaski_changes_stream_events_received_total counter",
                           f"chaski_changes_stream_events_received_total {self.change_stream.received}"]
             if self.runners:

@@ -59,7 +59,8 @@ def test_transaction_failure_does_not_publish_new_cursor():
     feed = feed_at()
     try:
         feed.accept_page(page(), 10, stream_id=11)
-        feed.conn.execute("CREATE TRIGGER refuse_cursor BEFORE INSERT ON change_cursor BEGIN SELECT RAISE(ABORT,'fixture refusal'); END")
+        feed.conn.execute("CREATE TRIGGER refuse_cursor BEFORE INSERT ON change_cursor "
+                          "BEGIN SELECT RAISE(ABORT,'fixture refusal'); END")
         with pytest.raises(sqlite3.IntegrityError):
             feed.accept_page(page(12), 11, stream_id=12)
         assert feed.cursor_tx == 11
