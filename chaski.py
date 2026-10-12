@@ -442,6 +442,19 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    from consumer_lease import ConsumerLease, ConsumerLeaseError
+
+    inbox = (args.emitter_db or args.state.with_name("emitter.db")) if args.emitters else None
+    try:
+        with ConsumerLease(args.state, inbox):
+            return run_consumer(args)
+    except ConsumerLeaseError as exc:
+        LOG.error("%s", exc)
+        return 2
+
+
+def run_consumer(args) -> int:
+    """Enter only after both persistent cursor and inbox custody are held."""
     rules = load_rules(args.rules)
     reactor = Reactor(Quipu(args.quipu), rules, args.state, args.event_poll)
     if args.emitters:
