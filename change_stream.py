@@ -60,6 +60,8 @@ class ChangeStream:
         self.quipu, self.cursor = quipu, cursor
         self.pending = queue.Queue(maxsize=1)
         self.errors = 0
+        self.received = 0
+        self.logged_first_commit = False
         self.stop = threading.Event()
         self.wakeup = threading.Event()
         self.thread = threading.Thread(target=self._read, daemon=True)
@@ -118,10 +120,16 @@ class ChangeStream:
                     stream_id, page, done = self.pending.get(timeout=remaining)
             except queue.Empty:
                 break
+            # Receipt counts deliveries, including refusals and replay. It is
+            # not an acknowledgement; only accept_page's commit advances cursor.
+            self.received += 1
             try:
                 feed.accept_page(page, self.cursor, stream_id=stream_id)
                 # Successful return means SQLite committed both inbox and cursor.
                 self.cursor = stream_id
+                if not self.logged_first_commit:
+                    LOG.info("stream path committed tx=%s", stream_id)
+                    self.logged_first_commit = True
                 applied += 1
             except Exception as exc:
                 feed.errors += 1
