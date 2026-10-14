@@ -1,0 +1,20 @@
+Script started on 2026-10-14 18:52:51-04:00 [COMMAND="stty -onlcr && bash docs/probes/release/run.sh" <not executed on terminal>]
+$ git cat-file -e c56140f:scripts/release-artifacts.py
+fatal: path 'scripts/release-artifacts.py' exists on disk, but not in 'c56140f'
+Baseline: no release checker in the packaging proposal.
+
+$ python3 scripts/release-artifacts.py v9.9.9
+REFUSING release: tag and project metadata disagree
+Mismatched tag refused before building.
+
+$ python3 scripts/release-artifacts.py v0.1.0
+v0.1.0: project and lock versions match
+
+$ uv build; verify artifact metadata; verify checksums
+f8303db4c38a97146bb8917b35723f87d8d8824b54578cdca7c0616f28a0f05e  chaski_reactor-0.1.0-py3-none-any.whl
+72083207586e310ca82e930f59fbdce09e2756cce1a78061f10b9cef724d92e9  chaski_reactor-0.1.0.tar.gz
+chaski_reactor-0.1.0-py3-none-any.whl: OK
+chaski_reactor-0.1.0.tar.gz: OK
+Local rehearsal only: no tag, registry upload or host installation.
+
+Script done on 2026-10-14 18:52:53-04:00 [COMMAND_EXIT_CODE="0"]
