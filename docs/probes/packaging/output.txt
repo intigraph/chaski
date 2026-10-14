@@ -1,10 +1,10 @@
-Script started on 2026-10-14 18:25:29-04:00 [COMMAND="bash docs/probes/packaging/run.sh" <not executed on terminal>]
+Script started on 2026-10-14 18:26:54-04:00 [COMMAND="stty -onlcr && bash docs/probes/packaging/run.sh" <not executed on terminal>]
 $ uv build (isolated base 4f5e7914)
 Building source distribution...
 error: Failed to build `<base>`
   Caused by: <base> does not appear to be a Python project, as neither `pyproject.toml` nor `setup.py` are present in the directory
 Expected baseline packaging failure verified.
-$ uv build (candidate 3e6c7ba)
+$ uv build (candidate 3abea2f)
 Built chaski_reactor-0.1.0-py3-none-any.whl and chaski_reactor-0.1.0.tar.gz
 $ installed-wheel smoke (isolated environment, outside source checkout)
 Downloading cpython-3.11.15-linux-x86_64-gnu (download) (29.5MiB)
@@ -13,4 +13,4 @@ Installed 2 packages in 1ms
 rule offline-canary UNKNOWN (keeping 1 firing): offline UNKNOWN control
 chaski 0.1.0: 12 installed modules; 3 console identities; canary fired, UNKNOWN preserved, resolved
 
-Script done on 2026-10-14 18:25:35-04:00 [COMMAND_EXIT_CODE="0"]
+Script done on 2026-10-14 18:26:59-04:00 [COMMAND_EXIT_CODE="0"]

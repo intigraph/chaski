@@ -1,6 +1,6 @@
 # Packaging and installed canary demonstration
 
-The same `uv build` operation fails on base `4f5e7914a6d0e31f6de7d54a50b73dc5e0ab3e55` because it has no packaging metadata. Candidate `3e6c7ba` builds both artifacts; an isolated wheel installation then verifies its module RECORD, three console scripts, and a measured canary round trip. Later commits add only this evidence.
+The same `uv build` operation fails on base `4f5e7914a6d0e31f6de7d54a50b73dc5e0ab3e55` because it has no packaging metadata. Candidate `3abea2f` (unchanged product code from `3e6c7ba`) builds both artifacts; an isolated wheel installation then verifies its module RECORD, three console scripts, and a measured canary round trip. Later commits add only this evidence.
 
 This is a replayable terminal recording: [output/transcript](output.txt) and [timing](timing.txt). Download both and run `scriptreplay --log-out output.txt --log-timing timing.txt`; local playback was checked. No inline player is required. Temporary base/source paths are replaced by `<base>`/`<source>` in the captured command output. No test results are synthesized.
 
