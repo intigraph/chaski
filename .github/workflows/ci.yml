@@ -65,5 +65,5 @@ jobs:
           set -euo pipefail
           wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
           test "${#wheels[@]}" -eq 1
-          uv run --no-project --isolated --directory "$RUNNER_TEMP" --with "${wheels[0]}" \
+          uv run --no-project --isolated --python 3.11 --directory "$RUNNER_TEMP" --with "${wheels[0]}" \
             python "$GITHUB_WORKSPACE/scripts/smoke-installed.py"
