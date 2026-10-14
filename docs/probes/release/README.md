@@ -1,6 +1,6 @@
 # Release rehearsal
 
-Product candidate `c37b31f` adds the release lane after the packaging baseline
+Product candidate `9763ebb` adds the release lane after the packaging baseline
 `c56140f`. The recording shows the missing baseline checker, refusal of an
 incorrect tag, and a matching local build whose wheel and source archive pass
 metadata and checksum checks. No release is published and no host is installed.
@@ -11,7 +11,9 @@ Replay the retained terminal capture:
 scriptreplay --timing timing.txt --typescript output.txt --divisor 2
 ```
 
-Run the probe from this revision with `bash docs/probes/release/run.sh`.
+Run the probe from a full clone of this revision with `bash docs/probes/release/run.sh`.
+The packaging baseline commit must be present; the script checks a known file
+in it before interpreting the missing release checker.
 The `v0.1.0` argument is the version at recording time. The source checks also
 have regression coverage for mismatched package/lock versions, incorrect
 artifact metadata, and unexpected payloads.

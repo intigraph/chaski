@@ -2,6 +2,11 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$root"
+if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
+  echo "A full clone is required for the historical baseline." >&2; exit 1
+fi
+# A missing commit must not masquerade as a missing release checker.
+git cat-file -e c56140f:pyproject.toml
 probe_dir="$(mktemp -d)"
 trap 'rm -rf "$probe_dir"' EXIT
 
