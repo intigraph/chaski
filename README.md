@@ -210,3 +210,30 @@ release any earlier locks. These locks serialize cooperating CLI consumers;
 they do not exclude arbitrary privileged tools or authorize stream activation.
 
 Deployments must include `consumer_lease.py` with the matching `chaski.py` pin.
+
+## Development
+
+Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) are required.
+The distribution is named `chaski-reactor`; its commands are `chaski`,
+`chaski-event` and `chaski-once`.
+
+```sh
+uv run --locked python -m pytest
+uv run --locked ruff check .
+uv build
+```
+
+An offline canary exercises the actual reaction engine with controlled query
+answers. It fires, preserves its firing state on UNKNOWN, then resolves after a
+successful empty answer. It does not connect to a graph or deliver notifications.
+The receipt is separate from live consumer state:
+
+```sh
+uv run --locked chaski demo status
+uv run --locked chaski demo run --focus example-canary
+uv run --locked chaski demo status
+```
+
+CI builds the wheel and installs it into an isolated environment on Linux and
+macOS. Its smoke check verifies module bytes against the wheel RECORD, checks
+all console entry points, and reads the measured canary receipt back.
