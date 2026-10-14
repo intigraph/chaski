@@ -1,0 +1,49 @@
+[project]
+name = "chaski-reactor"
+version = "0.1.0"
+description = "Reactions and notifications when your knowledge graph changes"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml==6.0.3",
+]
+
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/scbrown/chaski"
+Repository = "https://github.com/scbrown/chaski"
+Issues = "https://github.com/scbrown/chaski/issues"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
+[project.scripts]
+chaski = "chaski:main"
+chaski-event = "external_event:main"
+chaski-once = "once:main"
+
+[tool.setuptools]
+py-modules = [
+    "alertmanager_sink", "change_stream", "chaski", "command_sink",
+    "consumer_lease", "demo", "emitter", "external_event", "failure_family_adapter",
+    "graph_sink", "incremental", "once",
+]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["."]
+
+[dependency-groups]
+build = [
+    "setuptools==84.0.0",
+]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+]

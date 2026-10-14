@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from importlib import metadata
 import logging
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -438,7 +440,16 @@ def make_sink(e: emitter.Emitter, sink: dict, quipu_url: str):
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "demo":
+        from demo import main as demo_main
+        return demo_main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    try:
+        installed_version = metadata.version("chaski-reactor")
+    except metadata.PackageNotFoundError:
+        installed_version = "source checkout"
+    ap.add_argument("--version", action="version", version=f"chaski {installed_version}")
     ap.add_argument("--quipu", required=True, help="quipu base URL")
     ap.add_argument("--rules", required=True, type=Path)
     ap.add_argument("--state", required=True, type=Path, help="event cursor file")
