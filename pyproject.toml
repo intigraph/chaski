@@ -32,7 +32,7 @@ chaski-once = "once:main"
 py-modules = [
     "alertmanager_sink", "change_stream", "chaski", "command_sink",
     "consumer_lease", "demo", "emitter", "external_event", "failure_family_adapter",
-    "graph_sink", "incremental", "once",
+    "graph_sink", "incremental", "once", "slot_receiver",
 ]
 
 [tool.pytest.ini_options]

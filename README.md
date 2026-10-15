@@ -237,3 +237,17 @@ uv run --locked chaski demo status
 CI builds the wheel and installs it into an isolated environment on Linux and
 macOS. Its smoke check verifies module bytes against the wheel RECORD, checks
 all console entry points, and reads the measured canary receipt back.
+
+### Scheduled receiver admission (library)
+
+`slot_receiver.SlotLedger` supplies durable, at-most-once admission for a
+scheduled command receiver. `slot_id(job, revision, scheduled_at)` identifies a
+UTC schedule slot independently of delivery retries. Bind each claim to the
+admitted host and immutable manifest. A lost reply replays the stored command
+outcome; a crash after claiming leaves `SlotUnknown` and requires reconciliation,
+never automatic re-execution. Preserve the ledger across rollback.
+
+This library does not schedule jobs, authenticate senders, admit executable
+manifests, sign transitions, or export runs. Those remain the integrating
+receiver's responsibilities. A stored outcome is not signed workflow acceptance.
+No runtime configuration enables this library automatically.

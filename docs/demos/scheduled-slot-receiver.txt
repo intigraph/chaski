@@ -1,0 +1,8 @@
+Local library transcript. Base ae166bc68bc61b44b5b3fc079cde65b1c86e6de2 has no admission API; empty import path models that absence, not an old duplicate-execution bug.
+BASE: scheduled-slot admission API is unavailable
+HEAD: two deliveries, executions=1, identical receipts=True
+CONTROL: a distinct scheduled slot executes; total executions=2
+
+Reproduce candidate: PYTHONPATH=. python3 scripts/demo-slot-receiver.py
+Transcript only: subprocess output was captured; terminal timing was not recorded.
+No live jobs, keys, credentials or network were used. Crash-after-side-effect and concurrent-process coverage is in test_slot_receiver.py.
