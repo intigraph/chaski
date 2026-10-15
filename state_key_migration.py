@@ -30,13 +30,18 @@ def stable(value):
 
 
 def validate(plan):
-    if set(plan) != {"schema", "mappings"} or plan["schema"] != SCHEMA or not isinstance(plan["mappings"], list):
+    if (
+        not isinstance(plan, dict)
+        or set(plan) != {"schema", "mappings"}
+        or plan["schema"] != SCHEMA
+        or not isinstance(plan["mappings"], list)
+    ):
         raise ValueError("invalid exact-mapping plan")
     if not 1 <= len(plan["mappings"]) <= 1000:
         raise ValueError("plan must contain 1..1000 reviewed mappings")
     sources, targets = set(), set()
     for mapping in plan["mappings"]:
-        if set(mapping) != {"emitter", "from", "to", "expected"}:
+        if not isinstance(mapping, dict) or set(mapping) != {"emitter", "from", "to", "expected"}:
             raise ValueError("invalid mapping fields")
         emitter, source, target = (mapping[k] for k in ("emitter", "from", "to"))
         if not all(isinstance(v, str) and v and not any(c.isspace() for c in v) for v in (emitter, source, target)):
