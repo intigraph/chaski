@@ -1,0 +1,8 @@
+Script started on 2026-10-15 06:06:39-04:00 [COMMAND="python3 scripts/demo-state-key-migration.py" <not executed on terminal>]
+BEFORE same logical item changed identity: BLOCKED short key + UNBLOCKED IRI => no event
+{"queued": [], "outbox_count": 0}
+DRY RUN {"conflicts": [], "merge": 1, "noop": 0, "plan_sha256": "881eaf2748c40fec15e3fd7d31ae3a27d17aa429db7a833e697984f57c15f75b", "rename": 0}
+AFTER same canonical UNBLOCKED observation uses retained historical BLOCKED state
+{"queued": ["fixture-transition"], "replay": [], "outbox_count": 1, "event_sent": false}
+
+Script done on 2026-10-15 06:06:39-04:00 [COMMAND_EXIT_CODE="0"]
