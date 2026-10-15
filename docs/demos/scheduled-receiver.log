@@ -1,0 +1,14 @@
+Script started on 2026-10-15 03:46:33-04:00 [COMMAND="stty -onlcr; python scripts/demo-scheduled-receiver.py" <not executed on terminal>]
+Library demonstration; no real key, signature, process or graph write.
+First delivery:
+fixture admission control passed
+fixture signed-start persistence callback
+SYNTHETIC CHILD CALLBACK
+fixture signed-terminal persistence callback: skipped-by-hold
+fixture export/read-back callback
+Identical redelivery:
+fixture admission control passed
+fixture export/read-back callback
+{"child_callbacks": 1, "same_result": true, "outcome": "skipped-by-hold"}
+
+Script done on 2026-10-15 03:46:33-04:00 [COMMAND_EXIT_CODE="0"]
