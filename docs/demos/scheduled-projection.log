@@ -1,0 +1,10 @@
+Script started on 2026-10-15 07:48:58-04:00 [COMMAND="stty -onlcr && .venv/bin/python scripts/demo-scheduled-projection.py" <not executed on terminal>]
+Receiver identity positive control: True
+Pinned schedule projection available: True
+Effective 1250; first eligible aligned slot: 1800
+Three observations; two current-slot events: 2
+Next deadline: 3000
+Missing required identity: REFUSED; retained outbox rows: 2
+Execution callbacks: 0; no sink or production schedule enabled.
+
+Script done on 2026-10-15 07:48:58-04:00 [COMMAND_EXIT_CODE="0"]
