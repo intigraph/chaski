@@ -33,7 +33,7 @@ chaski-state-key-migrate = "state_key_migration:main"
 py-modules = [
     "alertmanager_sink", "change_stream", "chaski", "command_sink",
     "consumer_lease", "demo", "emitter", "external_event", "failure_family_adapter",
-    "graph_sink", "incremental", "once", "scheduled_receiver", "slot_receiver", "state_key_migration",
+    "graph_sink", "incremental", "once", "scheduled_receiver", "shuttle_process_port", "slot_receiver", "state_key_migration",
 ]
 
 [tool.pytest.ini_options]
