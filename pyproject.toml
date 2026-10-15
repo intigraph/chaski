@@ -27,12 +27,13 @@ default = true
 chaski = "chaski:main"
 chaski-event = "external_event:main"
 chaski-once = "once:main"
+chaski-state-key-migrate = "state_key_migration:main"
 
 [tool.setuptools]
 py-modules = [
     "alertmanager_sink", "change_stream", "chaski", "command_sink",
     "consumer_lease", "demo", "emitter", "external_event", "failure_family_adapter",
-    "graph_sink", "incremental", "once", "scheduled_receiver", "shuttle_process_port", "slot_receiver",
+    "graph_sink", "incremental", "once", "scheduled_receiver", "shuttle_process_port", "slot_receiver", "state_key_migration",
 ]
 
 [tool.pytest.ini_options]
