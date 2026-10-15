@@ -28,16 +28,49 @@ workers. This can wait for the full callback duration. Abrupt termination leaves
 claims UNKNOWN. Threads and children remain inside the owning service's cgroup;
 this adapter cannot provide survival across that service's exit.
 
-This source adapter accepts complete bindings. A generic emitter envelope does
-not contain that binding: production configuration still needs a separately
-validated schedule/envelope adapter and trusted fixed-command executor. No sink
-factory or production configuration enables this class automatically. Do not
-acknowledge an upstream delivery merely because a future was submitted.
+The asynchronous receiver accepts complete bindings. `ScheduledEventSink` below
+converts native emitter envelopes into that binding. Production configuration
+still needs a validated catalogue projection and trusted fixed-command executor.
+No sink factory or production configuration enables either class automatically.
+Do not acknowledge an upstream delivery merely because a future was submitted.
 
 Reproduce the blocked-child/receipt/capacity controls with
 `python -m pytest -q test_async_scheduled_sink.py`. These use real threads,
 SQLite claims and the actual emitter outbox, with synthetic signing callbacks.
 They do not establish installed signing, schedule coverage or natural firings.
+
+### Native emitter envelopes
+
+Wrap the asynchronous receiver with
+`scheduled_event_sink.ScheduledEventSink(receiver, emitter, recipient)`. The
+operator pins the emitter label, human routing recipient and receiver scope.
+The adapter accepts the existing emitter's `scheduled` envelope only when its
+item and routing match those pins. It decodes the slot from the canonical
+`scheduled-v1-` event identifier and re-encodes the complete expected scope to
+verify exact equality. Alternate encodings, foreign scopes, duplicate or extra
+JSON fields, missing fields, boolean slots and unbounded timestamps refuse
+before the asynchronous receiver is called. Delivery timestamps and emitter
+generation cannot replace the frozen scheduled slot.
+
+The adapter exposes a stable delivery scope containing the emitter, recipient
+and inner receiver scope. Existing outbox delivery freezes this scope before
+its first call, preserving the original binding across retries. A scheduling
+adapter must emit `run_id(scope, scheduled_at)` as its deterministic `event_id`
+and use `event: scheduled`; it must not set `generation_event_ids`, which
+replaces that identifier with a hash. Set `baseline_emits` when an already-due
+slot should emit during bootstrap. These options require the reviewed schedule
+projection; this envelope adapter cannot infer a schedule or admit execution.
+
+`test_scheduled_event_sink.py` uses actual `observe` and `deliver_pending` with
+the durable outbox, real worker threads and slot ledger. Signing callbacks are
+synthetic. It verifies one blocked execution, no early receipt and terminal
+publication before acknowledgment, alongside rejected scopes and malformed
+events. All execution admission remains the trusted signed port's job.
+
+Replay `python scripts/demo-scheduled-event.py`, or download the output-only
+[terminal recording](demos/scheduled-event.log) and [timing](demos/scheduled-event.timing)
+for `scriptreplay`. The demo prints actual outbox and receipt state with
+synthetic signing callbacks; it does not contact a service or run a real job.
 
 `scheduled_receiver.receive` connects an already admitted delivery to the
 persistent `SlotLedger` and a trusted `SignedRunPort`. It is a library entry

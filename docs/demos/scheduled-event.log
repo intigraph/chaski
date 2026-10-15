@@ -1,0 +1,12 @@
+Script started on 2026-10-15 07:19:09-04:00 [COMMAND="stty -onlcr && .venv/bin/python scripts/demo-scheduled-event.py" <not executed on terminal>]
+Source demo: actual emitter/outbox, worker and ledger; signing is a fixture.
+Existing async receiver positive control: True
+Native scheduled envelope adapter available: True
+Observed due declaration; durable outbox rows: 1
+Two delivery attempts; child still blocked: True
+Execution callbacks: 1 ; published: 0 ; receipt: None
+Published actual outcome: skipped-by-hold
+Terminal receipt: 690.0 ; execution callbacks: 1
+Outbox pinned emitter and recipient: schedule operator
+
+Script done on 2026-10-15 07:19:09-04:00 [COMMAND_EXIT_CODE="0"]
