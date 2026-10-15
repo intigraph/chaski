@@ -30,7 +30,7 @@ chaski-once = "once:main"
 
 [tool.setuptools]
 py-modules = [
-    "alertmanager_sink", "change_stream", "chaski", "command_sink",
+    "alertmanager_sink", "async_scheduled_sink", "change_stream", "chaski", "command_sink",
     "consumer_lease", "demo", "emitter", "external_event", "failure_family_adapter",
     "graph_sink", "incremental", "once", "scheduled_receiver", "shuttle_process_port", "slot_receiver",
 ]

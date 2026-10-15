@@ -1,0 +1,13 @@
+Script started on 2026-10-15 06:37:02-04:00 [COMMAND="stty -onlcr && .venv/bin/python scripts/demo-async-scheduled.py" <not executed on terminal>]
+Source demo: real worker thread and SQLite; signing callbacks are fixtures.
+Existing receiver positive control: True
+Async handoff available: True
+First delivery: PENDING, no receipt
+Duplicate delivery: PENDING, no receipt
+Worker blocked while caller continued: True
+Execution callbacks: 1 ; publications: 0
+Later delivery: RECEIPT after terminal publication
+Published actual outcome: skipped-by-hold
+Final execution callbacks: 1
+
+Script done on 2026-10-15 06:37:02-04:00 [COMMAND_EXIT_CODE="0"]

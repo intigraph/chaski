@@ -1,5 +1,44 @@
 # Signed scheduled delivery bridge
 
+## Bounded asynchronous handoff
+
+`async_scheduled_sink.AsyncScheduledSink` runs the existing signed receiver
+on a bounded thread pool. The operator supplies one immutable `ExecutionScope`,
+the persistent ledger, a trusted `port_factory(scheduled_at)`, and a trusted
+`execute(scheduled_at)` callback. Delivery data must repeat the exact scope and
+integer UTC slot; it cannot supply commands or choose a different identity.
+The callback must enforce the admitted command's runtime and output limits.
+
+`deliver(binding)` raises `DeliveryPending` after submission and while work is
+running. It returns only on a later call after the receiver verifies terminal
+publication. Existing emitter delivery therefore keeps its durable outbox row
+undelivered and retries with its normal backoff. Pending counts as a delivery
+failure in existing metrics; it does not mean the child failed. A terminal hold
+or failed child can have a successful delivery receipt for its actual outcome.
+The emitter's retry cadence bounds receipt latency independently of completion.
+
+Capacity includes queued, running, and completed work awaiting receipt. Duplicate
+in-flight deliveries reuse one future. Worker exceptions reach the next delivery
+unchanged; later retries use the persistent slot ledger, so publication may retry
+but a claimed child cannot run again. Context variables are copied on submission,
+including any strict-admission context set by the caller.
+
+The owner calls `close()` outside the reactor tick to stop admission and drain
+workers. This can wait for the full callback duration. Abrupt termination leaves
+claims UNKNOWN. Threads and children remain inside the owning service's cgroup;
+this adapter cannot provide survival across that service's exit.
+
+This source adapter accepts complete bindings. A generic emitter envelope does
+not contain that binding: production configuration still needs a separately
+validated schedule/envelope adapter and trusted fixed-command executor. No sink
+factory or production configuration enables this class automatically. Do not
+acknowledge an upstream delivery merely because a future was submitted.
+
+Reproduce the blocked-child/receipt/capacity controls with
+`python -m pytest -q test_async_scheduled_sink.py`. These use real threads,
+SQLite claims and the actual emitter outbox, with synthetic signing callbacks.
+They do not establish installed signing, schedule coverage or natural firings.
+
 `scheduled_receiver.receive` connects an already admitted delivery to the
 persistent `SlotLedger` and a trusted `SignedRunPort`. It is a library entry
 point: importing it starts no listener, timer, scheduler or child process.
