@@ -1,0 +1,8 @@
+Script started on 2026-10-15 05:52:16-04:00 [COMMAND="stty -onlcr; python scripts/demo-shuttle-process.py" <not executed on terminal>]
+Actual subprocess and durable slot ledger; CLI receipts are a fixture.
+Held result: skipped-by-hold
+Delivery attempts: 2; execution callbacks: 1
+Repeat result identical: True
+Changed pinned config: REFUSED before CLI invocation
+
+Script done on 2026-10-15 05:52:16-04:00 [COMMAND_EXIT_CODE="0"]
