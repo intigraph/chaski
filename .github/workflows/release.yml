@@ -1,0 +1,98 @@
+name: Release
+
+# Reusable publication avoids the workflow-token tag-trigger restriction.
+on:
+  push:
+    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaski-publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_FROM_PR: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.0"
+      - name: Validate version and test the tagged source
+        run: |
+          python scripts/release-artifacts.py "$RELEASE_TAG"
+          uv sync --locked
+          uv run --locked python -m pytest -q
+          uv run --locked ruff check .
+      - name: Build and verify distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv build
+          python scripts/release-artifacts.py "$RELEASE_TAG" --dist dist
+          wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          uv run --no-project --isolated --python 3.11 --directory "$RUNNER_TEMP" --with "${wheels[0]}" \
+            python "$GITHUB_WORKSPACE/scripts/smoke-installed.py"
+      - name: Retain verified distributions for the isolated publisher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish checksummed GitHub artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release-artifacts.py "$RELEASE_TAG" --notes > "$RUNNER_TEMP/notes.md"
+          if [ -n "$RELEASE_FROM_PR" ]; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+            gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz dist/checksums.txt
+            gh release edit "$RELEASE_TAG" --draft=false --title "Chaski $RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "Chaski $RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md" dist/*.whl dist/*.tar.gz dist/checksums.txt
+          fi
+
+  pypi:
+    needs: release
+    # The account owner must register the trusted publisher before opting in.
+    if: github.ref_type == 'tag' && vars.PYPI_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: pypi
+      url: https://pypi.org/project/chaski-reactor/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-distributions
+          path: dist
+      # No source checkout or installable build tools in the OIDC job.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
