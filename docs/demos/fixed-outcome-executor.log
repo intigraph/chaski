@@ -1,0 +1,10 @@
+Script started on 2026-10-15 08:37:01-04:00 [COMMAND="stty -onlcr && .venv/bin/python -I scripts/demo-fixed-outcome-executor.py" <not executed on terminal>]
+Receiver identity positive control: True
+Fixed outcome executor available: True
+Child: {'outcome': 'succeeded', 'exit_code': 0}
+Child: {'outcome': 'skipped-by-hold', 'exit_code': 0}
+Child: {'outcome': 'failed', 'exit_code': 7}
+Exit-zero child without result: UNKNOWN; preserve claim, no retry.
+No production schedule, signing key, graph or cron was used.
+
+Script done on 2026-10-15 08:37:01-04:00 [COMMAND_EXIT_CODE="0"]

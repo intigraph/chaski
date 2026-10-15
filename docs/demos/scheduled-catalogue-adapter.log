@@ -1,0 +1,13 @@
+Script started on 2026-10-15 09:35:17-04:00 [COMMAND="stty -onlcr && .venv/bin/python -I scripts/demo-scheduled-catalogue-adapter.py" <not executed on terminal>]
+Projection positive control: True
+Incremental catalogue adapter available: True
+Describe reader calls: 0
+Bootstrap discover/evaluate reader calls: 2
+After idle ticks, reader calls: 2
+After next due slot, reader calls: 3
+Missing identity UNKNOWN count: 1
+Retained next deadline: 3000.0
+Retained queued slots: 2
+Reader is a fixture; no graph, production job, key, profile or cron used.
+
+Script done on 2026-10-15 09:35:18-04:00 [COMMAND_EXIT_CODE="0"]

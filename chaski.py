@@ -342,7 +342,13 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
         if missing:
             raise RuleError(f"emitter {d.get('label', '?')!r} is missing {missing}")
         kinds = set(d["sink"])
-        if kinds != {"jsonl"} and not ("graph" in kinds and kinds <= {"graph", "command", "alertmanager"}):
+        if kinds == {"scheduled"}:
+            from scheduled_sink_factory import validate
+            try:
+                validate(d["sink"]["scheduled"])
+            except (ValueError, TypeError, OSError) as exc:
+                raise RuleError(f"emitter {d['label']}: invalid scheduled sink: {exc}") from None
+        elif kinds != {"jsonl"} and not ("graph" in kinds and kinds <= {"graph", "command", "alertmanager"}):
             raise RuleError(f"emitter {d['label']}: sink must be {{jsonl: <path>}} or {{graph: {{...}}}},"
                             " optionally with command: {...} and/or alertmanager: {...} beside graph")
         if "command" in kinds and not (d["sink"]["command"] or {}).get("argv"):
@@ -394,6 +400,12 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             raise RuleError("emitter trigger must be schedule, changes or external")
         if e.externally_triggered and d.get("baseline_emits") is not True:
             raise RuleError("external emitters require baseline_emits: true to retain their first event")
+        if kinds == {"scheduled"}:
+            from scheduled_sink_factory import validate_emitter
+            try:
+                validate_emitter(e)
+            except ValueError as exc:
+                raise RuleError(f"emitter {d['label']}: {exc}") from None
         out.append((e, d["sink"]))
     return out
 
@@ -404,6 +416,9 @@ def make_sink(e: emitter.Emitter, sink: dict, quipu_url: str):
     never from the rules or the command line."""
     import emitter as em
 
+    if set(sink) == {"scheduled"}:
+        from scheduled_sink_factory import build
+        return build(e, sink["scheduled"])
     if "jsonl" in sink:
         return em.JsonlSink(sink["jsonl"])
     import graph_sink
@@ -481,18 +496,49 @@ def run_consumer(args) -> int:
     """Enter only after both persistent cursor and inbox custody are held."""
     rules = load_rules(args.rules)
     reactor = Reactor(Quipu(args.quipu), rules, args.state, args.event_poll)
-    if args.emitters:
-        import emitter
+    conn, sinks = None, []
+    try:
+        if args.emitters:
+            import emitter
 
-        conn = emitter.connect(args.emitter_db or args.state.with_name("emitter.db"))
-        budget = emitter.WriteBudget(args.emitter_write_interval)  # ONE, shared by all
-        from incremental import ChangeFeed, ChangeRunner
+            conn = emitter.connect(args.emitter_db or args.state.with_name("emitter.db"))
+            budget = emitter.WriteBudget(args.emitter_write_interval)  # ONE, shared by all
+            from incremental import ChangeFeed, ChangeRunner
 
-        reactor.runners = [(ChangeRunner if e.change_driven else emitter.Runner)(
-            e, conn, make_sink(e, sink, args.quipu), budget) for e, sink in load_emitters(args.emitters)]
-        changing = [r for r in reactor.runners if r.emitter.change_driven]
-        if changing:
-            reactor.change_feed = ChangeFeed(reactor.quipu, changing)
+            for e, definition in load_emitters(args.emitters):
+                sink = make_sink(e, definition, args.quipu)
+                sinks.append(sink)  # retain custody even if runner construction fails
+                reactor.runners.append((ChangeRunner if e.change_driven else emitter.Runner)(
+                    e, conn, sink, budget))
+            changing = [r for r in reactor.runners if r.emitter.change_driven]
+            if changing:
+                reactor.change_feed = ChangeFeed(reactor.quipu, changing)
+        return _serve_consumer(args, reactor, rules)
+    finally:
+        # Drain before releasing ConsumerLease; pending outbox rows remain
+        # unacknowledged until their next delivery verifies the result.
+        try:
+            _close_sinks(sinks)
+        finally:
+            if conn is not None:
+                conn.close()
+
+
+def _close_sinks(sinks):
+    error = None
+    for sink in reversed(sinks):
+        try:
+            close = getattr(sink, 'close', None)
+            if close is not None:
+                close()
+        except Exception as exc:
+            if error is None:
+                error = exc
+    if error is not None:
+        raise error
+
+
+def _serve_consumer(args, reactor, rules):
     LOG.info("chaski: %d rule(s), event poll %ds", len(rules), reactor.event_poll_s)
     if args.once:
         now = time.time()
