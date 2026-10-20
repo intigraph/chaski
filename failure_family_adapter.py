@@ -101,15 +101,12 @@ def verdicts(report, policy, *, since, until):
     for key in ("unknown", "excluded"):
         if type(report.get(key)) is not int or report[key] < 0:
             raise ValueError("missing coverage accounting")
-    if report["unknown"]:
-        # Unknown identities could include a previously firing family. A complete
-        # inventory is required by missing_is_from; do not invent its recovery.
-        raise ValueError("normalization coverage UNKNOWN")
+    partial = report["unknown"] > 0
     families = report.get("families")
     if not isinstance(families, list) or len(families) > 10000:
         raise ValueError("invalid family inventory")
     records, seen = [], set()
-    accounted = report["excluded"]
+    accounted = report["excluded"] + report["unknown"]
     for family in families:
         if not isinstance(family, dict):
             raise ValueError("invalid family")
@@ -135,7 +132,9 @@ def verdicts(report, policy, *, since, until):
         records.append(
             {
                 "item": identifier,
-                "verdict": "ABOVE" if count >= threshold else "BELOW",
+                # Known failures prove a lower bound. Unknown identities cannot
+                # undo an ABOVE, but could belong to a below/absent family.
+                "verdict": "ABOVE" if count >= threshold else ("UNKNOWN" if partial else "BELOW"),
                 "event_id": identifier,
                 "owner": owner,
                 "evidence": (f"count={count}; threshold={threshold}; "
@@ -145,6 +144,8 @@ def verdicts(report, policy, *, since, until):
         )
     if accounted != report["input_records"]:
         raise ValueError("aggregation accounting UNKNOWN")
+    if partial:
+        return {"records": records, "scope": [record["item"] for record in records]}
     return records
 
 

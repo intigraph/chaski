@@ -1,6 +1,7 @@
 """Lease refresh must require fresh evidence and preserve event identity."""
 
 from unittest.mock import patch
+import json
 
 import emitter
 
@@ -61,6 +62,19 @@ def test_refresh_same_identity_without_new_transition():
     tick(runner, 20, "ABOVE")
     tick(runner, 100, "ABOVE")
     assert sink.renewals == sink.deliveries
+    assert conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 1
+
+
+def test_partial_positive_can_renew_without_claiming_complete_measurement():
+    _, conn, sink, runner = setup()
+    tick(runner, 10, "BELOW")
+    tick(runner, 20, "ABOVE")
+    partial = emitter.decode_adapter_output(json.dumps({"records": [
+        {"item": "a", "event_id": "source-a", "verdict": "ABOVE"}], "scope": ["a"]}))
+    with patch.object(emitter, "run_adapter", return_value=partial):
+        runner.tick(100)
+    assert sink.renewals == sink.deliveries and runner.last_success == 20
+    assert runner.runs == {"ok": 2, "unknown": 1}
     assert conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 1
 
 

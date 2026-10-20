@@ -82,6 +82,17 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verdicts(report)
 
+    def test_partial_normalization_keeps_proven_crossings_but_not_recovery(self):
+        for count, expected in ((4, "UNKNOWN"), (5, "ABOVE")):
+            report = self.report(count)
+            report["unknown"] = 1
+            report["input_records"] += 1
+            result = self.verdicts(report)
+            self.assertEqual(result["scope"], [self.family])
+            self.assertEqual(result["records"][0]["verdict"], expected)
+        report = {**self.report(0), "families": [], "unknown": 1, "input_records": 3}
+        self.assertEqual(self.verdicts(report), {"records": [], "scope": []})
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -170,24 +181,29 @@ def test_threshold_restart_lost_ack_unknown_and_exact_recovery(tmp_path, monkeyp
 
     def tick(report, now):
         clock[0] = now
-        monkeypatch.setattr(emitter, "run_adapter", lambda _: case.verdicts(report))
+        monkeypatch.setattr(emitter, "run_adapter", lambda _: emitter.decode_adapter_output(
+            json.dumps(case.verdicts(report))))
         runner.tick(now)
 
     tick(case.report(4), 10)
-    tick(case.report(5), 20)
+    partial = {**case.report(5), "unknown": 1, "input_records": 8}
+    tick(partial, 20)
     assert len(active) == 1
+    assert runner.runs == {"ok": 1, "unknown": 1} and runner.last_success == 10
     assert conn.execute("SELECT delivered_at FROM outbox").fetchone()[0] is None
     conn.close()
     conn = emitter.connect(path)
     runner = emitter.Runner(definition, conn, sink)
-    tick(case.report(5), 100)
+    tick(partial, 100)
     assert len(active) == 1 and attempts[0] == attempts[1]
     assert conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 1
-    for change in ({"unknown": 1}, {"complete": False},
+    for change in ({"unknown": 1, "input_records": 3}, {"complete": False},
                    {"until": "2000-01-01T00:00:00Z"}):
         tick({**case.report(0), **change}, clock[0] + 10)
         assert conn.execute("SELECT verdict FROM verdicts").fetchone()[0] == "ABOVE"
         assert conn.execute("SELECT COUNT(*) FROM recovery_outbox").fetchone()[0] == 0
+    tick({**case.report(0), "families": [], "unknown": 1, "input_records": 3}, 200)
+    assert active and conn.execute("SELECT verdict FROM verdicts").fetchone()[0] == "ABOVE"
     tick(case.report(4), 300)
     assert not active and attempts[-1] == attempts[0]
     assert conn.execute("SELECT COUNT(*) FROM recovery_outbox WHERE delivered_at IS NOT NULL").fetchone()[0] == 1

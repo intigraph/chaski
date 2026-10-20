@@ -182,16 +182,38 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+class _ScopedRecords(list):
+    """A successful partial inventory; absence outside scope is UNKNOWN."""
+
+    def __init__(self, records, scope):
+        super().__init__(records)
+        self.scope = frozenset(scope)
+
+
+def decode_adapter_output(raw: str) -> list[dict]:
+    records = json.loads(raw)
+    if isinstance(records, dict):
+        if set(records) != {"records", "scope"}:
+            raise ProtocolError("partial adapter output requires records and scope")
+        scope, values = records["scope"], records["records"]
+        if (not isinstance(scope, list) or len(scope) > 10000
+                or any(not isinstance(item, str) or not item for item in scope)
+                or len(set(scope)) != len(scope)
+                or not isinstance(values, list) or len(values) > 10000):
+            raise ProtocolError("invalid partial adapter inventory")
+        return _ScopedRecords(values, scope)
+    if not isinstance(records, list):
+        raise ProtocolError("adapter output is not a JSON list or partial inventory")
+    return records
+
+
 def run_adapter(emitter: Emitter) -> list[dict]:
     """The adapter's records. Raises on ANY failure: the caller treats it as UNKNOWN."""
     proc = subprocess.run(emitter.command, capture_output=True, text=True,
                           timeout=emitter.timeout_s, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"adapter exited {proc.returncode}: {proc.stderr.strip()[:300]}")
-    records = json.loads(proc.stdout)
-    if not isinstance(records, list):
-        raise ProtocolError("adapter output is not a JSON list")
-    return records
+    return decode_adapter_output(proc.stdout)
 
 
 def _validate(emitter: Emitter, records: list[dict]) -> None:
@@ -225,6 +247,8 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
     All-or-nothing: a protocol error leaves every verdict and the outbox as
     they were.
     """
+    if scope is None and isinstance(records, _ScopedRecords):
+        scope = records.scope
     _validate(emitter, records)
     if emitter.missing_is_from and scope is None:
         # Opt-in only for complete inventories of a bounded rolling window.
@@ -695,8 +719,13 @@ class Runner:
             try:
                 records = run_adapter(self.emitter)
                 self.queued_total += len(observe(self.conn, self.emitter, records, now))
-                self.runs["ok"] += 1
-                self.last_success = now
+                if isinstance(records, _ScopedRecords):
+                    # Apply conclusive per-item evidence, but never present a
+                    # partial inventory as a successful whole-emitter census.
+                    self.runs["unknown"] += 1
+                else:
+                    self.runs["ok"] += 1
+                    self.last_success = now
                 positive = {r[self.emitter.key] for r in records
                             if r["verdict"] == self.emitter.to_verdict}
             except Exception as exc:  # noqa: BLE001 — a failed run is UNKNOWN for every item

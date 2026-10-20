@@ -13,11 +13,14 @@ The adapter requests only the configured current window, with a fixed
 existing family counts. A legacy release fails closed; there is no seven-day
 scan fallback. Matching exact source instants (including UTC spelling
 differences), complete inventory and consistent record accounting are required.
-Overflow, stale/mismatched intervals, missing fields and unsupported normalized
-identities are UNKNOWN for the whole tick. Unknown identities could belong to a
-previously firing family, so they cannot prove its recovery. This conservative
-coverage gate may withhold known-family alerts until normalization coverage is
-adequate; monitor measurement UNKNOWN rather than treating it as below threshold.
+Overflow, stale/mismatched intervals and missing fields refuse the whole tick.
+With unsupported normalized identities, known failures still prove a lower
+bound: a known family at or above threshold can fire. Below-threshold families
+become UNKNOWN, since unsupported records could belong to them. The adapter
+returns the existing partial-scope observation contract so absent families
+cannot recover. Whole-inventory health remains UNKNOWN (no success-time advance),
+even when a conclusive crossing is delivered. A legacy runner that cannot read
+the partial envelope refuses rather than treating it as an empty inventory.
 
 A complete empty window permits the existing missing-family recovery path;
 ordinary below-threshold counts also resolve through the original frozen alert
@@ -41,6 +44,9 @@ source evidence and a received firing, and sends the original frozen alert only
 to the lease-aware sink. It creates no additional graph, command or outbox event.
 UNKNOWN, missing, recovered and old generations cannot renew. Failed renewals
 retain backoff across restarts. Lease expiry is not evidence of recovery.
+A partial inventory may renew a known ABOVE family's received alert using its
+fresh positive evidence; it still cannot renew an UNKNOWN or absent family, and
+the whole-inventory measurement status remains UNKNOWN.
 
 Monitor both measurement status and freshness, along with pending outbox and
 renewal failures. Source measurement success does not prove receiver delivery.

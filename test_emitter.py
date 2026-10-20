@@ -15,6 +15,44 @@ from pathlib import Path
 
 import emitter as em
 
+
+def test_partial_wire_scope_preserves_absent_state_and_legacy_lists():
+    import pytest
+
+    definition = em.Emitter(label="partial", command=[], interval_s=5, owner="crew",
+                            from_verdict="BELOW", to_verdict="ABOVE",
+                            generation_event_ids=True, missing_is_from=True)
+    conn = em.connect(":memory:")
+    try:
+        em.observe(conn, definition, [{"item": "old", "verdict": "BELOW"}], 10)
+        em.observe(conn, definition, [{"item": "old", "verdict": "ABOVE", "event_id": "old"}], 20)
+        partial = em.decode_adapter_output('{"records": [], "scope": []}')
+        em.observe(conn, definition, partial, 30)
+        assert conn.execute("SELECT verdict FROM verdicts").fetchone()[0] == "ABOVE"
+        bad = em.decode_adapter_output(json.dumps({"records": [
+            {"item": "outside", "verdict": "ABOVE", "event_id": "outside"}], "scope": []}))
+        with pytest.raises(em.ProtocolError):
+            em.observe(conn, definition, bad, 40)
+        assert conn.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 1
+        # Ordinary JSON lists continue to mean a complete inventory.
+        em.observe(conn, definition, em.decode_adapter_output("[]"), 50)
+        assert conn.execute("SELECT verdict FROM verdicts").fetchone()[0] == "BELOW"
+    finally:
+        conn.close()
+
+
+def test_malformed_partial_wire_is_not_a_complete_empty_inventory():
+    import pytest
+
+    for value in ({}, {"records": [], "scope": None}, {"records": [], "scope": "a"},
+                  {"records": [], "scope": ["a", "a"]},
+                  {"records": [], "scope": [None]},
+                  {"records": {}, "scope": []},
+                  {"records": [], "scope": [], "complete": True},
+                  {"records": [], "scope": [str(i) for i in range(10001)]}):
+        with pytest.raises(em.ProtocolError):
+            em.decode_adapter_output(json.dumps(value))
+
 ADAPTER = "import json,sys; print(open(sys.argv[1]).read())"
 
 
