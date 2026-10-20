@@ -1,0 +1,105 @@
+{
+  "source_revision": "fc3c017bdc91b3b08792577e5caf40b76f54904a",
+  "reviewed_at": "2026-10-20T23:13:31.537295Z",
+  "max_age_seconds": 2592000,
+  "records": [
+    {
+      "kind": "idea",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#what-it-does",
+      "summary": "Chaski reacts to graph changes and scheduled deadlines using SELECT focus sets; changes to those sets drive transition handling.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "type": "Concept"
+    },
+    {
+      "kind": "idea",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#incremental-verdict-adapters",
+      "summary": "Incremental adapters declare subscriptions and route changed subjects to bounded durable key queues; UNKNOWN preserves earlier verdicts rather than asserting recovery.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "type": "Concept"
+    },
+    {
+      "kind": "interface",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#development",
+      "summary": "The distribution chaski-reactor exposes chaski, chaski-event and chaski-once commands. Its offline canary is distinct from live consumer state.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "interfaceKind": "CLI",
+        "publicName": "chaski, chaski-event, chaski-once"
+      },
+      "depends_on": [
+        "http://aegis.gastown.local/ontology/code/quipu/src%2Flib.rs"
+      ]
+    },
+    {
+      "kind": "interface",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#incremental-verdict-adapters",
+      "summary": "Version-1 JSON adapter requests support discovery, routing and scoped item evaluation; emitter configuration is YAML and durable offsets resume committed work.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "interfaceKind": "file-format",
+        "publicName": "Emitter YAML and version-1 adapter JSON"
+      }
+    },
+    {
+      "kind": "interface",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#authenticated-external-event-sources",
+      "summary": "The local external-event CLI queues authenticated-source events into the existing outbox. Authentication belongs to the caller; this CLI does not expose a network listener.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "interfaceKind": "CLI",
+        "publicName": "chaski-event external event admission"
+      }
+    },
+    {
+      "kind": "decision",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#design-constraints",
+      "summary": "The documented design requires public graph APIs, output liveness, UNKNOWN distinct from all-clear, transition-only writes and existing Prometheus/Alertmanager emission.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "type": "DecisionRecord",
+      "properties": {
+        "status": "active",
+        "supersessionStatus": "not-recorded-in-source"
+      },
+      "see_also": [
+        "https://scbrown.github.io/quechua/ns#Decision"
+      ]
+    },
+    {
+      "kind": "start-here",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md",
+      "summary": "Read the reactor overview and documented boundaries before configuring event or schedule rules.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "startHereOrder": 1,
+        "glossaryTerm": "https://scbrown.github.io/quechua/ns#Decision"
+      }
+    },
+    {
+      "kind": "start-here",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#design-constraints",
+      "summary": "Preserve UNKNOWN and output-liveness boundaries when changing adapters or receivers.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "startHereOrder": 2
+      }
+    },
+    {
+      "kind": "start-here",
+      "source": "README.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#development",
+      "summary": "Run the locked tests and offline canary before adopting a release; source smoke is not live receiver acceptance.",
+      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "properties": {
+        "startHereOrder": 3
+      }
+    }
+  ]
+}
