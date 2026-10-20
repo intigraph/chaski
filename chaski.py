@@ -168,6 +168,48 @@ class Reactor:
         self.change_feed = None
         self.change_stream = None
         self.runners: list = []  # stage 2 emitters, attached by main()
+        from deadline_heap import DeadlineHeap
+        self.deadlines = DeadlineHeap()
+        self._rules = {r.label: r for r in rules}
+        self._event_rules = [r for r in rules if r.triggerKind == 'event']
+        self._timers_ready = False
+        self._runner_by_label = {}
+        self.wakes = 0
+        self.due_evaluations = 0
+
+    def _initialize_timers(self, now):
+        if self._timers_ready:
+            return
+        for rule in self._rules.values():
+            if rule.enabled and rule.triggerKind == 'schedule':
+                self.deadlines.set(('rule', rule.label),
+                                   self.states[rule.label].last_attempt + rule.interval_s)
+        self._runner_by_label = {r.emitter.label: r for r in self.runners}
+        for label in self._runner_by_label:
+            self.deadlines.set(('runner', label), now)
+        if self._event_rules or (self.change_feed is not None and self.change_stream is None):
+            self.deadlines.set(('poll', ''), self.last_event_poll + self.event_poll_s)
+        self._timers_ready = True
+
+    def update_rule(self, rule):
+        """Owner-thread replacement/cancel; no graph read or recurrence inference."""
+        self._rules[rule.label] = rule
+        self.states.setdefault(rule.label, RuleState())
+        self._event_rules = [r for r in self._rules.values()
+                             if r.enabled and r.triggerKind == 'event']
+        key = ('rule', rule.label)
+        self.deadlines.cancel(key)
+        if rule.enabled and rule.triggerKind == 'schedule':
+            self.deadlines.set(key, self.states[rule.label].last_attempt + rule.interval_s)
+        if self._event_rules:
+            self.deadlines.set(('poll', ''), self.last_event_poll + self.event_poll_s)
+        elif self.change_feed is None or self.change_stream is not None:
+            self.deadlines.cancel(('poll', ''))
+
+    def wait_timeout(self, now):
+        self._initialize_timers(now)
+        due = self.deadlines.peek()
+        return None if due is None else max(0.0, due - now)
 
     def _load_cursor(self) -> int:
         try:
@@ -202,7 +244,7 @@ class Reactor:
     def poll_events(self, now: float) -> set[str]:
         """Labels of event rules whose types appeared since the cursor."""
         self.last_event_poll = now
-        wanted = {t for r in self.rules if r.triggerKind == "event" for t in r.eventTypes.split(",") if t}
+        wanted = {t for r in self._event_rules for t in r.eventTypes.split(",") if t}
         if not wanted:
             return set()
         try:
@@ -222,33 +264,53 @@ class Reactor:
         self.cursor = int(out.get("next_offset", self.cursor))
         self.event_lag = int(out.get("lag", 0))
         self._save_cursor()
-        return {r.label for r in self.rules
-                if r.triggerKind == "event" and seen & set(r.eventTypes.split(","))}
+        return {r.label for r in self._event_rules if seen & set(r.eventTypes.split(","))}
 
     def tick(self, now: float) -> None:
-        poll_changes = False
+        self._initialize_timers(now)
+        self.wakes += 1
+        poll_changes, event_due, runners_due = False, set(), set()
         with self.lock:
-            due = {r.label for r in self.rules if r.triggerKind == "schedule"
-                   and now - self.states[r.label].last_attempt >= r.interval_s}
-            if now - self.last_event_poll >= self.event_poll_s:
-                due |= self.poll_events(now)
-                poll_changes = self.change_feed is not None and self.change_stream is None
-            for rule in self.rules:
-                if rule.label in due:
+            # Freeze this batch before rescheduling; an invalid zero interval
+            # cannot make pop_due consume its own new entry forever.
+            for (kind, label), _due in list(self.deadlines.pop_due(now)):
+                if kind == 'rule':
+                    rule = self._rules[label]
                     self.evaluate(rule, now)
+                    self.due_evaluations += 1
+                    self.deadlines.set((kind, label), now + max(1, rule.interval_s))
+                elif kind == 'runner':
+                    runners_due.add(label)
+                else:
+                    event_due |= self.poll_events(now)
+                    poll_changes = self.change_feed is not None and self.change_stream is None
+                    self.deadlines.set(('poll', ''), now + self.event_poll_s)
+            for label in event_due:
+                self.evaluate(self._rules[label], now)
+                self.due_evaluations += 1
         if poll_changes:
             self.change_feed.poll()
         if self.change_stream is not None:
             self.change_stream.pump(self.change_feed)
+        if self.change_feed is not None:
+            runners_due.update(self.change_feed.take_dirty())
         # OUTSIDE the lock: an adapter run takes minutes, and metrics() takes
         # this lock. Runners publish their own snapshots for the scrape.
-        for runner in self.runners:
+        for label in runners_due:
+            runner = self._runner_by_label[label]
             if not runner.emitter.change_driven or (self.change_feed and self.change_feed.ready):
                 runner.tick(now)
+                self.deadlines.set(('runner', label), runner.next_wakeup(now))
+            else:
+                # Bootstrap failed; poll transport owns retry, not a fast runner tick.
+                self.deadlines.set(('runner', label), now + self.event_poll_s)
 
     def metrics(self) -> str:
         with self.lock:
             lines = [
+                f'chaski_reactor_wakes_total {self.wakes}',
+                f'chaski_reactor_due_evaluations_total {self.due_evaluations}',
+                f'chaski_reactor_deadlines {len(self.deadlines)}',
                 "# HELP chaski_rule_firing 1 while the rule's condition returns this focus node.",
                 "# TYPE chaski_rule_firing gauge",
             ]
@@ -554,12 +616,14 @@ def _serve_consumer(args, reactor, rules):
             raise RuntimeError("cannot start stream without a durable bootstrap cursor")
         reactor.change_stream = ChangeStream(reactor.quipu, row[0])
     serve_metrics(reactor, args.metrics_port)
+    shutdown = threading.Event()
     while True:
         reactor.tick(time.time())
+        timeout = reactor.wait_timeout(time.time())
         if reactor.change_stream is not None:
-            reactor.change_stream.wait(5)
+            reactor.change_stream.wait(timeout)
         else:
-            time.sleep(5)
+            shutdown.wait(timeout)
 
 
 if __name__ == "__main__":

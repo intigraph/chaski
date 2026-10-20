@@ -59,7 +59,7 @@ def test_stream_reactor_idle_never_polls_change_feed(tmp_path):
     reactor = Reactor(q, [], tmp_path / 'cursor.json', 60)
     def forbidden():
         raise AssertionError('idle stream must not poll graph metadata')
-    reactor.change_feed = SimpleNamespace(poll=forbidden, ready=True)
+    reactor.change_feed = SimpleNamespace(poll=forbidden, ready=True, take_dirty=lambda: set())
     pumped = []
     reactor.change_stream = SimpleNamespace(pump=lambda feed: pumped.append(feed))
     for now in range(60, 7201, 60):

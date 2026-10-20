@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS adapter_reconcile (
  emitter TEXT PRIMARY KEY, last_success REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS adapter_subscription (
  emitter TEXT PRIMARY KEY, digest TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS adapter_deadlines_due ON adapter_deadlines(emitter,due);
 """
 
 
@@ -188,6 +189,23 @@ class ChangeRunner(Runner):
                         resolve_recovery=getattr(self.emitter, "resolve_recovery", False))
         self._publish()
 
+    def next_wakeup(self, now):
+        label = self.emitter.label
+        row = self.conn.execute('SELECT last_success FROM adapter_reconcile WHERE emitter=?',
+                                (label,)).fetchone()
+        source_due = row[0] + self.emitter.interval_s if row else now
+        deadline = self.conn.execute('SELECT MIN(due) FROM adapter_deadlines WHERE emitter=?',
+                                     (label,)).fetchone()[0]
+        if deadline is not None:
+            source_due = min(source_due, deadline)
+        pending = self.conn.execute('SELECT 1 FROM change_inbox WHERE emitter=? LIMIT 1',
+                                    (label,)).fetchone()
+        if pending:
+            source_due = now
+        source_due = max(source_due, self.retry_at)
+        delivery = self.delivery_due(now)
+        return max(now + 0.01, min(source_due, delivery) if delivery is not None else source_due)
+
     def _publish(self):
         super()._publish()
         pending = self.conn.execute("SELECT COUNT(*) FROM change_inbox WHERE emitter=?",
@@ -216,6 +234,11 @@ class ChangeFeed:
         self.ready = False
         self.cursor_tx = -1  # UNKNOWN until a durable page commit is observed
         self.poll_events_received = 0
+        self.dirty = set()
+
+    def take_dirty(self):
+        dirty, self.dirty = self.dirty, set()
+        return dirty
 
     def poll(self):
         # Bounded catch-up in one poll: a normal burst need not wait another
@@ -283,4 +306,7 @@ class ChangeFeed:
         self.lag = watermark - cursor
         self.cursor_tx = cursor
         self.ready = True
+        self.dirty.update(row[0] for row in deliveries)
+        if row is None:
+            self.dirty.update(r.emitter.label for r in self.runners)
         return row is not None and cursor > since and cursor < watermark

@@ -1,0 +1,25 @@
+{
+  "idle": [
+    {
+      "evaluations": 0,
+      "graph_reads": 0,
+      "idle_wakes_after_bootstrap": 11,
+      "jobs": 10,
+      "reactor_turns": 12,
+      "rule_visits": 250,
+      "window_s": 60
+    },
+    {
+      "evaluations": 0,
+      "graph_reads": 0,
+      "idle_wakes_after_bootstrap": 11,
+      "jobs": 10000,
+      "reactor_turns": 12,
+      "rule_visits": 250000,
+      "window_s": 60
+    }
+  ],
+  "physical_latency": [],
+  "physical_latency_status": "UNSUPPORTED: base has no deadline wait API",
+  "scope": "synthetic local source, fake query responses; no service acceptance"
+}

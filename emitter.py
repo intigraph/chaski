@@ -639,6 +639,35 @@ class Runner:
         self._snapshot: dict = {}
         self._publish()
 
+    def delivery_due(self, now):
+        """Earliest retained delivery, including global write pacing."""
+        values = []
+        for table in ('outbox', 'recovery_outbox'):
+            row = self.conn.execute(
+                f'SELECT MIN(next_attempt) FROM {table} WHERE emitter=? AND delivered_at IS NULL',
+                (self.emitter.label,)).fetchone()
+            if row[0] is not None:
+                values.append(row[0])
+        if not values:
+            return None
+        due = min(values)
+        if self.budget is not None:
+            due = max(due, self.budget._last + self.budget.interval_s)
+        # A retained but not deliverable dependency is pending work, not an idle
+        # population. Avoid a zero-time loop without changing its durable state.
+        return max(now + 0.01, due)
+
+    def next_wakeup(self, now):
+        due = (now + 5 if self.emitter.externally_triggered else
+               self.last_attempt + max(1, self.emitter.interval_s))
+        delivery = self.delivery_due(now)
+        if delivery is not None:
+            due = min(due, delivery)
+        setup = getattr(self.sink, 'setup_pending', None)
+        if setup is not None and setup():
+            due = min(due, now + max(5, self.budget.interval_s if self.budget else 5))
+        return max(now + 0.01, due)
+
     def tick(self, now: float) -> None:
         positive = set()
         if not self.emitter.externally_triggered and now - self.last_attempt >= self.emitter.interval_s:

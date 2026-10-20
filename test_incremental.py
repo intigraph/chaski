@@ -331,12 +331,14 @@ def test_reactor_backlog_drains_event_woken_bounded_turns(setup, tmp_path, monke
     reactor = Reactor(SimpleNamespace(), [], tmp_path / 'cursor.json', 60)
     reactor.change_feed, reactor.change_stream = feed, stream
     adapter_turns = []
-    reactor.runners = [SimpleNamespace(emitter=SimpleNamespace(change_driven=True),
-                                      tick=lambda now: adapter_turns.append((stream.cursor, now)))]
+    reactor.runners = [SimpleNamespace(emitter=SimpleNamespace(change_driven=True, label='e'),
+                                      tick=lambda now: adapter_turns.append((stream.cursor, now)),
+                                      next_wakeup=lambda now: now + 86400)]
     for now in range(60, 65):
         assert stream.wait(0), "remainder must wake the next turn without a five-second sleep"
         reactor.tick(now)
-    assert adapter_turns == [(3, 60), (6, 61), (9, 62), (12, 63), (13, 64)]
+    # Startup plus the matching event; irrelevant pages do not evaluate adapters.
+    assert adapter_turns == [(3, 60), (13, 64)]
     assert conn.execute("SELECT tx FROM change_cursor").fetchone()[0] == 13
     assert conn.execute("SELECT tx FROM change_inbox").fetchall() == [(13,)]
     assert stream.pending.empty() and stream.pending.maxsize == 1
