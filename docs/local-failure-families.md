@@ -7,6 +7,25 @@ The adapter isolates its child HOME so operator remote-store configuration canno
 redirect the explicit local measurement. It never copies the database or exports
 raw commands, arguments or error messages.
 
+The adapter requests only the configured current window, with a fixed
+`--max-records 10000` cap. The DP release must support that flag and return
+`since`, `until`, `max_records`, `input_records` and `complete` alongside its
+existing family counts. A legacy release fails closed; there is no seven-day
+scan fallback. Matching exact source instants (including UTC spelling
+differences), complete inventory and consistent record accounting are required.
+Overflow, stale/mismatched intervals, missing fields and unsupported normalized
+identities are UNKNOWN for the whole tick. Unknown identities could belong to a
+previously firing family, so they cannot prove its recovery. This conservative
+coverage gate may withhold known-family alerts until normalization coverage is
+adequate; monitor measurement UNKNOWN rather than treating it as below threshold.
+
+A complete empty window permits the existing missing-family recovery path;
+ordinary below-threshold counts also resolve through the original frozen alert
+identity. The adapter changes no routing or sink and exports only hashed
+identities, crew owners and numerical evidence. Its top-level measurement errors
+are scrubbed, including child stderr. The row cap does not establish production
+query latency, byte volume, normalization coverage or the appropriate threshold.
+
 The once.py entry runs one scheduled emitter tick without a listener. Its state
 and metrics parents must be provisioned beforehand. A process lock prevents
 overlap; a persistent write budget retains its thirty-second floor across
