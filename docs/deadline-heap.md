@@ -67,3 +67,27 @@ A replayable [output recording](demos/deadline-heap/output.log) and
 and use `scriptreplay --log-out output.log --log-timing timing.log`; terminal
 playback is required, with no inline video claim. The exact source head and
 base are supplied in the PR.
+
+## Review regression controls
+
+The original heap proposal selected retained recovery rows even when recovery
+was disabled, and omitted incremental sink setup retries after successful empty
+source discovery. The correction preserves the rows while scheduling only
+policy-eligible queues, bounds unresolved dependency checks to five seconds,
+and shares setup receiver/policy eligibility between execution and wake planning.
+Setup retry deadlines remain independent of source reconcile deadlines and use
+the shared write budget.
+
+The same synthetic actual-consumer probes before and after the correction report:
+
+| 60-second fixture | Original proposal | Corrected |
+| --- | --- | --- |
+| Disabled recovery debt | 5,702 turns | 1 turn, row retained |
+| Empty discovery, failed sink setup | 1 attempt, next wait 86,400s | 12 attempts, next wait 5s |
+
+Both probes use a controlled clock and synthetic sinks, with zero external
+requests. These are source regression measurements, not installed CPU or network
+latency claims. `test_wakeup_feedback.py` exercises these consumer paths plus
+blocked dependency pacing, preserved debt, setup policy, bound receiver scope,
+and global write-budget controls. The reusable probes are in
+`scripts/probe-recovery-wakeups.py` and `scripts/probe-setup-wakeups.py`.

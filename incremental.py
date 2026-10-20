@@ -203,8 +203,11 @@ class ChangeRunner(Runner):
         if pending:
             source_due = now
         source_due = max(source_due, self.retry_at)
-        delivery = self.delivery_due(now)
-        return max(now + 0.01, min(source_due, delivery) if delivery is not None else source_due)
+        obligations = [source_due]
+        for due in (self.delivery_due(now), self.setup_due(now)):
+            if due is not None:
+                obligations.append(due)
+        return max(now + 0.01, min(obligations))
 
     def _publish(self):
         super()._publish()

@@ -446,6 +446,19 @@ class WriteBudget:
             return True
 
 
+def sink_setup_allowed(conn, sink, now, emitter, resolve_recovery):
+    """Use the same receiver/policy gate for setup execution and scheduling."""
+    allowed = not resolve_recovery
+    first = conn.execute(
+        "SELECT delivery_scope FROM outbox WHERE emitter=? AND delivered_at IS NULL"
+        " AND next_attempt<=? ORDER BY created LIMIT 1", (emitter, now)).fetchone()
+    if first is not None:
+        scope_fn = getattr(sink, "delivery_scope", None)
+        scope = scope_fn() if scope_fn is not None else None
+        allowed = first[0] is None or json.loads(first[0]) == scope
+    return allowed
+
+
 def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: str,
                     budget: WriteBudget | None = None, limit: int = 50,
                     resolve_recovery: bool = False) -> tuple[int, int]:
@@ -460,15 +473,7 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     # A sink may owe a one-time setup write (the graph sink's Reaction). It
     # takes its own budget slot, never piggy-backing on an event's.
     setup = getattr(sink, "setup_pending", None)
-    setup_allowed = not resolve_recovery
-    if setup is not None and setup():
-        first_firing = conn.execute(
-            "SELECT delivery_scope FROM outbox WHERE emitter=? AND delivered_at IS NULL"
-            " AND next_attempt<=? ORDER BY created LIMIT 1", (emitter, now)).fetchone()
-        if first_firing is not None:
-            scope_fn = getattr(sink, "delivery_scope", None)
-            scope = scope_fn() if scope_fn is not None else None
-            setup_allowed = first_firing[0] is None or json.loads(first_firing[0]) == scope
+    setup_allowed = sink_setup_allowed(conn, sink, now, emitter, resolve_recovery)
     # Recoveries only read/close an existing firing; no setup write is needed.
     # A redirected bound firing must not set up the changed receiver either.
     if setup is not None and setup() and setup_allowed:
@@ -642,10 +647,15 @@ class Runner:
     def delivery_due(self, now):
         """Earliest retained delivery, including global write pacing."""
         values = []
-        for table in ('outbox', 'recovery_outbox'):
+        tables = ('outbox', 'recovery_outbox') if self.emitter.resolve_recovery else ('outbox',)
+        for table in tables:
             row = self.conn.execute(
-                f'SELECT MIN(next_attempt) FROM {table} WHERE emitter=? AND delivered_at IS NULL',
-                (self.emitter.label,)).fetchone()
+                f"SELECT MIN(CASE WHEN json_extract(payload,'$.resolution_of') IS NOT NULL"
+                " AND NOT EXISTS (SELECT 1 FROM outbox prior WHERE"
+                f" prior.event_id=json_extract({table}.payload,'$.resolution_of')"
+                " AND prior.delivered_at IS NOT NULL) THEN MAX(next_attempt,?)"
+                f" ELSE next_attempt END) FROM {table} WHERE emitter=? AND delivered_at IS NULL",
+                (now + 5, self.emitter.label)).fetchone()
             if row[0] is not None:
                 values.append(row[0])
         if not values:
@@ -663,10 +673,20 @@ class Runner:
         delivery = self.delivery_due(now)
         if delivery is not None:
             due = min(due, delivery)
-        setup = getattr(self.sink, 'setup_pending', None)
-        if setup is not None and setup():
-            due = min(due, now + max(5, self.budget.interval_s if self.budget else 5))
+        setup = self.setup_due(now)
+        if setup is not None:
+            due = min(due, setup)
         return max(now + 0.01, due)
+
+    def setup_due(self, now):
+        setup = getattr(self.sink, 'setup_pending', None)
+        if (setup is None or not setup() or not sink_setup_allowed(
+                self.conn, self.sink, now, self.emitter.label,
+                self.emitter.resolve_recovery)):
+            return None
+        interval = max(5, self.budget.interval_s if self.budget else 5)
+        return max(now + interval,
+                   self.budget._last + self.budget.interval_s if self.budget else now)
 
     def tick(self, now: float) -> None:
         positive = set()
