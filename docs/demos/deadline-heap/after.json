@@ -1,0 +1,41 @@
+{
+  "idle": [
+    {
+      "evaluations": 0,
+      "graph_reads": 0,
+      "idle_wakes_after_bootstrap": 0,
+      "jobs": 10,
+      "reactor_turns": 1,
+      "rule_visits": 0,
+      "window_s": 60
+    },
+    {
+      "evaluations": 0,
+      "graph_reads": 0,
+      "idle_wakes_after_bootstrap": 0,
+      "jobs": 10000,
+      "reactor_turns": 1,
+      "rule_visits": 0,
+      "window_s": 60
+    }
+  ],
+  "physical_latency": [
+    {
+      "jobs": 10,
+      "measured_queries": 10,
+      "p50_s": 0.00015544891357421875,
+      "p95_s": 0.00016999244689941406,
+      "scope": "real OS wait plus sequential in-process fake queries; network excluded",
+      "target_p95_under_1s": true
+    },
+    {
+      "jobs": 10000,
+      "measured_queries": 10000,
+      "p50_s": 0.023270130157470703,
+      "p95_s": 0.03608298301696777,
+      "scope": "real OS wait plus sequential in-process fake queries; network excluded",
+      "target_p95_under_1s": true
+    }
+  ],
+  "scope": "synthetic local source, fake query responses; no service acceptance"
+}
