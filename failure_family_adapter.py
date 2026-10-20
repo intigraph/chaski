@@ -18,6 +18,8 @@ import urllib.request
 
 FAMILY = re.compile(r"[0-9a-f]{64}\Z")
 OWNER = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+TOOL = re.compile(r"[A-Za-z_][A-Za-z0-9_.:-]{0,127}\Z")
+MAX_RECORDS = 10000
 
 
 def validate_policy(policy):
@@ -31,10 +33,12 @@ def validate_policy(policy):
     if not isinstance(overrides, dict) or len(overrides) > 1000:
         raise ValueError("invalid threshold overrides")
     for family, value in overrides.items():
-        if not FAMILY.fullmatch(family) or type(value) is not int or not 1 <= value <= 10000:
+        if (not isinstance(family, str) or not FAMILY.fullmatch(family)
+                or type(value) is not int or not 1 <= value <= 10000):
             raise ValueError("invalid family override")
     owners = policy.get("tool_owners", {})
-    if not isinstance(owners, dict):
+    if (not isinstance(owners, dict) or len(owners) > 1000
+            or any(not isinstance(tool, str) or not TOOL.fullmatch(tool) for tool in owners)):
         raise ValueError("invalid tool ownership")
     for owner in [policy.get("default_owner", ""), *owners.values()]:
         if not isinstance(owner, str) or not OWNER.fullmatch(owner) or owner in {"human", "stiwi"}:
@@ -73,18 +77,39 @@ def policy_from_graph(server, iri):
     return validate_policy(json.loads(data["rows"][0]["value"]))
 
 
-def verdicts(report, policy):
+def verdicts(report, policy, *, since, until):
     validate_policy(policy)
-    if not isinstance(report, dict) or report.get("window_seconds") != policy["window_seconds"]:
+    if (not isinstance(report, dict) or type(report.get("window_seconds")) is not int
+            or report["window_seconds"] != policy["window_seconds"]):
         raise ValueError("aggregation window mismatch")
+    # A cached, legacy or truncated report cannot establish absence/recovery.
+    # Compare instants, not the Go/Python spelling of UTC or fractional seconds.
+    try:
+        measured_start = dt.datetime.fromisoformat(report["since"].replace("Z", "+00:00"))
+        measured_end = dt.datetime.fromisoformat(report["until"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("aggregation interval UNKNOWN") from None
+    if (measured_start.tzinfo is None or measured_end.tzinfo is None
+            or measured_start != since or measured_end != until
+            or until - since != dt.timedelta(seconds=policy["window_seconds"])
+            or report.get("complete") is not True
+            or type(report.get("max_records")) is not int
+            or report["max_records"] != MAX_RECORDS
+            or type(report.get("input_records")) is not int
+            or not 0 <= report["input_records"] <= MAX_RECORDS):
+        raise ValueError("aggregation coverage UNKNOWN")
     for key in ("unknown", "excluded"):
         if type(report.get(key)) is not int or report[key] < 0:
             raise ValueError("missing coverage accounting")
+    partial = report["unknown"] > 0
     families = report.get("families")
     if not isinstance(families, list) or len(families) > 10000:
         raise ValueError("invalid family inventory")
     records, seen = [], set()
+    accounted = report["excluded"] + report["unknown"]
     for family in families:
+        if not isinstance(family, dict):
+            raise ValueError("invalid family")
         identifier = family.get("id")
         count = family.get("current_window")
         tool = family.get("tool")
@@ -95,15 +120,21 @@ def verdicts(report, policy):
             or type(count) is not int
             or count < 0
             or not isinstance(tool, str)
+            or not TOOL.fullmatch(tool)
+            or type(family.get("count")) is not int
+            or not count <= family["count"] <= MAX_RECORDS
         ):
             raise ValueError("invalid or duplicate family")
         seen.add(identifier)
+        accounted += family["count"]
         threshold = policy.get("family_thresholds", {}).get(identifier, policy["default_threshold"])
         owner = policy.get("tool_owners", {}).get(tool, policy["default_owner"])
         records.append(
             {
                 "item": identifier,
-                "verdict": "ABOVE" if count >= threshold else "BELOW",
+                # Known failures prove a lower bound. Unknown identities cannot
+                # undo an ABOVE, but could belong to a below/absent family.
+                "verdict": "ABOVE" if count >= threshold else ("UNKNOWN" if partial else "BELOW"),
                 "event_id": identifier,
                 "owner": owner,
                 "evidence": (f"count={count}; threshold={threshold}; "
@@ -111,6 +142,10 @@ def verdicts(report, policy):
                              f"unsupported_records={report['unknown']}"),
             }
         )
+    if accounted != report["input_records"]:
+        raise ValueError("aggregation accounting UNKNOWN")
+    if partial:
+        return {"records": records, "scope": [record["item"] for record in records]}
     return records
 
 
@@ -123,10 +158,9 @@ def main():
     args = parser.parse_args()
     policy = policy_from_graph(args.quipu_server, args.policy_iri)
     end = dt.datetime.now(dt.timezone.utc)
-    # Historical identities remain visible after their hour expires. Complete
-    # successful inventories permit the emitter's opt-in missing_is_from;
-    # any adapter failure never clears an existing firing.
-    start = end - dt.timedelta(days=7)
+    # Only the current window is needed. Complete empty inventories resolve old
+    # families through missing_is_from; failed/partial reports never clear them.
+    start = end - dt.timedelta(seconds=policy["window_seconds"])
     # Explicit paths survive a clean child HOME. Operator remote-store config
     # must not silently redirect this local, read-only measurement.
     binary = shutil.which(args.dp)
@@ -148,6 +182,8 @@ def main():
                 end.isoformat(),
                 "--window",
                 f"{policy['window_seconds']}s",
+                "--max-records",
+                str(MAX_RECORDS),
             ],
             env=child_env,
             capture_output=True,
@@ -158,8 +194,11 @@ def main():
     if result.returncode:
         # Do not echo dp stderr: it may contain an operational path or raw input.
         raise RuntimeError("desire-path aggregation failed")
-    print(json.dumps(verdicts(json.loads(result.stdout), policy)))
+    print(json.dumps(verdicts(json.loads(result.stdout), policy, since=start, until=end)))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        raise SystemExit("failure-family measurement UNKNOWN") from None

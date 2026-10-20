@@ -7,6 +7,28 @@ The adapter isolates its child HOME so operator remote-store configuration canno
 redirect the explicit local measurement. It never copies the database or exports
 raw commands, arguments or error messages.
 
+The adapter requests only the configured current window, with a fixed
+`--max-records 10000` cap. The DP release must support that flag and return
+`since`, `until`, `max_records`, `input_records` and `complete` alongside its
+existing family counts. A legacy release fails closed; there is no seven-day
+scan fallback. Matching exact source instants (including UTC spelling
+differences), complete inventory and consistent record accounting are required.
+Overflow, stale/mismatched intervals and missing fields refuse the whole tick.
+With unsupported normalized identities, known failures still prove a lower
+bound: a known family at or above threshold can fire. Below-threshold families
+become UNKNOWN, since unsupported records could belong to them. The adapter
+returns the existing partial-scope observation contract so absent families
+cannot recover. Whole-inventory health remains UNKNOWN (no success-time advance),
+even when a conclusive crossing is delivered. A legacy runner that cannot read
+the partial envelope refuses rather than treating it as an empty inventory.
+
+A complete empty window permits the existing missing-family recovery path;
+ordinary below-threshold counts also resolve through the original frozen alert
+identity. The adapter changes no routing or sink and exports only hashed
+identities, crew owners and numerical evidence. Its top-level measurement errors
+are scrubbed, including child stderr. The row cap does not establish production
+query latency, byte volume, normalization coverage or the appropriate threshold.
+
 The once.py entry runs one scheduled emitter tick without a listener. Its state
 and metrics parents must be provisioned beforehand. A process lock prevents
 overlap; a persistent write budget retains its thirty-second floor across
@@ -22,6 +44,9 @@ source evidence and a received firing, and sends the original frozen alert only
 to the lease-aware sink. It creates no additional graph, command or outbox event.
 UNKNOWN, missing, recovered and old generations cannot renew. Failed renewals
 retain backoff across restarts. Lease expiry is not evidence of recovery.
+A partial inventory may renew a known ABOVE family's received alert using its
+fresh positive evidence; it still cannot renew an UNKNOWN or absent family, and
+the whole-inventory measurement status remains UNKNOWN.
 
 Monitor both measurement status and freshness, along with pending outbox and
 renewal failures. Source measurement success does not prove receiver delivery.

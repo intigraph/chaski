@@ -61,6 +61,16 @@ known blocked-to-unblocked transition emits. Verdict and outbox commit in one
 transaction. Delivery is at least once to a receiver that deduplicates on the
 adapter's deterministic event id. Configure with `--emitters emitters.yaml`:
 
+Scheduled adapters normally return a JSON list representing the complete
+inventory. A partial observation may instead return
+`{"records": [...], "scope": ["item-a", "item-b"]}` (at most 10,000 records and
+unique scope keys). The existing partial-scope observation path updates only
+those keys; absence outside the scope is UNKNOWN. An empty partial scope never
+clears an earlier verdict. Conclusive records can still emit, while the runner
+counts the tick as UNKNOWN and does not advance whole-inventory success time.
+Malformed envelopes and records outside their scope refuse atomically. Existing
+JSON-list adapters retain their full-inventory behavior.
+
 ```yaml
 emitters:
   - label: workitem-unblocked

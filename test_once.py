@@ -4,6 +4,8 @@ import pytest
 
 import emitter
 import once
+import sys
+import json
 
 
 class Receiver:
@@ -74,3 +76,30 @@ def test_startup_failure_replaces_previous_green_with_unknown(tmp_path, monkeypa
                          "--metrics", str(metrics)])
     assert once.main() == 2
     assert 'chaski_local_measurement_ok{emitter="local"} 0' in metrics.read_text()
+
+
+def test_partial_scheduled_tick_delivers_known_crossing_but_reports_unknown(tmp_path, monkeypatch):
+    state, metrics = tmp_path / "state.db", tmp_path / "metrics.prom"
+    output = {"records": [{"item": "known", "verdict": "ABOVE", "event_id": "known"}],
+              "scope": ["known"]}
+    definition = emitter.Emitter(
+        label="local", command=[sys.executable, "-c", "import sys;print(sys.argv[1])", json.dumps(output)],
+        interval_s=5, owner="crew", from_verdict="BELOW", to_verdict="ABOVE",
+        missing_is_from=True, generation_event_ids=True,
+    )
+    conn = emitter.connect(state)
+    emitter.observe(conn, definition, [{"item": "known", "verdict": "BELOW"}], 10)
+    conn.close()
+    delivered = []
+
+    class Sink:
+        def deliver(self, event):
+            delivered.append(event)
+
+    monkeypatch.setattr(once.chaski, "load_emitters", lambda _: [(definition, {})])
+    monkeypatch.setattr(once.chaski, "make_sink", lambda *_: Sink())
+    assert once.run_once(tmp_path / "fixture.yaml", "local", state,
+                         "https://example.invalid", metrics, 30) == 2
+    assert len(delivered) == 1 and delivered[0]["item"] == "known"
+    assert 'chaski_local_measurement_ok{emitter="local"} 0' in metrics.read_text()
+    assert 'result="unknown"} 1' in metrics.read_text()
