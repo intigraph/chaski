@@ -1,7 +1,7 @@
 #!/bin/sh
 # Verify the published package before installing; no service or enrollment action.
 set -eu
-exec python3 - "$@" <<'PYINSTALL'
+exec python3 -I - "$@" <<'PYINSTALL'
 import hashlib
 import json
 import os
@@ -153,17 +153,14 @@ def install():
                     # shebangs remain valid. No command is published before smoke.
                     destination.mkdir()
                     created = True
-                    subprocess.run([sys.executable, '-m', 'venv', str(destination)], check=True, timeout=120)
+                    subprocess.run([sys.executable, '-I', '-m', 'venv', str(destination)], check=True, timeout=120)
                     python = destination / 'bin/python'
-                    subprocess.run([str(python), '-m', 'pip', '--isolated', '--disable-pip-version-check',
+                    subprocess.run([str(python), '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check',
                                     'install', '--no-input', str(work / names[0])], check=True, timeout=300)
-                    actual = subprocess.check_output([str(python), '-c',
+                    actual = subprocess.check_output([str(python), '-I', '-c',
                         'from importlib.metadata import version; print(version(' + repr(CONFIG['package']) + '))'], text=True, timeout=20).strip()
                     if actual != version:
                         raise ValueError('installed package version mismatch')
-                    for command in CONFIG['commands']:
-                        if not os.access(destination / 'bin' / command, os.X_OK):
-                            raise ValueError('missing console entrypoint: ' + command)
                 elif CONFIG['kind'] == 'source':
                     unpacked = work / 'source'
                     unpacked.mkdir()
@@ -187,22 +184,45 @@ def install():
                 # Pip's RECORD binds installed package/entrypoint bytes. Validate
                 # it on both first install and reuse; a stale marker is not proof.
                 code = """from importlib.metadata import distribution
-from pathlib import Path
-import base64, hashlib, sys
+from pathlib import Path, PurePosixPath
+import base64, hashlib, json, os, sys, zipfile
 root = Path(sys.prefix).resolve()
 dist = distribution(sys.argv[1])
 assert dist.version == sys.argv[2], 'installed package version mismatch'
+# RECORD may legitimately omit hashes. Bind every wheel payload file directly
+# to the freshly checksum-verified release instead of trusting mutable RECORD.
+with zipfile.ZipFile(sys.argv[3]) as wheel:
+    seen = set()
+    payload_count = 0
+    for member in wheel.infolist():
+        name = PurePosixPath(member.filename)
+        assert not name.is_absolute() and '..' not in name.parts, 'unsafe wheel path'
+        assert member.filename not in seen, 'duplicate wheel path'
+        seen.add(member.filename)
+        assert not any(part.endswith('.data') for part in name.parts), 'unsupported wheel data layout'
+        if member.is_dir() or member.filename.endswith('.dist-info/RECORD'):
+            continue
+        path = Path(dist.locate_file(member.filename))
+        assert not path.is_symlink() and path.is_file(), 'missing or linked wheel payload'
+        path.resolve().relative_to(root)
+        assert path.read_bytes() == wheel.read(member), 'installed wheel payload differs'
+        payload_count += 1
+    assert payload_count > 0, 'wheel has no payload'
 for entry in dist.files or []:
     if entry.hash is None:
         continue
-    path = Path(dist.locate_file(entry)).resolve()
-    path.relative_to(root)
-    assert path.is_file(), 'installed package entry is not a regular file'
+    path = Path(dist.locate_file(entry))
+    assert not path.is_symlink() and path.is_file(), 'installed package entry is not a regular file'
+    path.resolve().relative_to(root)
     actual = base64.urlsafe_b64encode(hashlib.new(entry.hash.mode, path.read_bytes()).digest()).decode().rstrip('=')
     assert actual == entry.hash.value, 'installed package file hash mismatch'
+for command in json.loads(sys.argv[4]):
+    path = root / 'bin' / command
+    assert not path.is_symlink() and path.is_file() and os.access(path, os.X_OK), 'missing or nonexecutable console entrypoint'
 """
-                subprocess.run([str(destination / 'bin/python'), '-c', code,
-                                CONFIG['package'], version], check=True, timeout=30)
+                subprocess.run([str(destination / 'bin/python'), '-I', '-c', code,
+                                CONFIG['package'], version, str(work / names[0]),
+                                json.dumps(CONFIG['commands'])], check=True, timeout=30)
             if CONFIG['kind'] == 'wheel':
                 binaries = prefix / 'bin'
                 binaries.mkdir(parents=True, exist_ok=True)

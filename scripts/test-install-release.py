@@ -156,6 +156,48 @@ class PackageInstall(unittest.TestCase):
         self.assertNotIn("Installed verified", result[1])
         self.assertEqual(target.read_text(), "tampered installed bytes")
 
+    def test_caller_metadata_cannot_shadow_installed_distribution(self):
+        shadow = self.root / "shadow"
+        metadata = shadow / (CONFIG["package"].replace("-", "_") + "-0.0.0.dist-info")
+        metadata.mkdir(parents=True)
+        (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: " + CONFIG["package"] + "\nVersion: 0.0.0\n")
+        previous = Path.cwd()
+        try:
+            os.chdir(shadow)
+            result = self.run_installer()
+        finally:
+            os.chdir(previous)
+        self.assertEqual(result[0], 0, result)
+
+    def test_missing_console_entrypoint_refuses_reuse(self):
+        self.assertEqual(self.run_installer()[0], 0)
+        destination = self.prefix / "share" / CONFIG["repo"] / TAG
+        command = destination / "bin" / CONFIG["commands"][0]
+        command.unlink()
+        result = self.run_installer()
+        self.assertNotEqual(result[0], 0, result)
+        self.assertNotIn("Installed verified", result[1])
+        self.assertFalse(command.exists())
+
+    def test_unhashed_wheel_payload_tamper_refuses_reuse(self):
+        self.assertEqual(self.run_installer()[0], 0)
+        destination = self.prefix / "share" / CONFIG["repo"] / TAG
+        target = next(destination.rglob("fixture_cli.py"))
+        target.write_text("def main(): print('tampered')\n")
+        result = self.run_installer()
+        self.assertNotEqual(result[0], 0, result)
+        self.assertNotIn("Installed verified", result[1])
+        self.assertEqual(target.read_text(), "def main(): print('tampered')\n")
+
+    def test_nonexecutable_console_entrypoint_refuses_reuse(self):
+        self.assertEqual(self.run_installer()[0], 0)
+        destination = self.prefix / "share" / CONFIG["repo"] / TAG
+        command = destination / "bin" / CONFIG["commands"][0]
+        command.chmod(0o644)
+        result = self.run_installer()
+        self.assertNotEqual(result[0], 0, result)
+        self.assertNotIn("Installed verified", result[1])
+
     def test_corrupt_checksum_preserves_previous(self):
         path = self.release / self.names[0]
         path.write_bytes(path.read_bytes() + b"corrupt")
