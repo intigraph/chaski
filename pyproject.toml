@@ -15,9 +15,9 @@ requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project.urls]
-Homepage = "https://github.com/scbrown/chaski"
-Repository = "https://github.com/scbrown/chaski"
-Issues = "https://github.com/scbrown/chaski/issues"
+Homepage = "https://github.com/intigraph/chaski"
+Repository = "https://github.com/intigraph/chaski"
+Issues = "https://github.com/intigraph/chaski/issues"
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
