@@ -26,9 +26,10 @@ deduplication and uncertainty. Historical missed slots are not a catch-up list.
 Changing schedule pins requires the normal revision/scope migration; this
 library does not reinterpret earlier pending deliveries.
 
-This is a source library, not an enrolled adapter or catalogue schema. Existing
-fixed-interval `ScheduledProjection` and its transport remain unchanged. The
-domain profile/catalogue binding, schedule persistence, signer, fixed child,
+This is a source library, not an enrolled schedule. The version-2 catalogue
+adapter uses `WeeklyScheduledProjection` to validate the typed weekly job and
+return the existing `records`/`next_checks` envelope; version 1 preserves the
+fixed-interval contract. The domain declaration/catalogue identity, persistence, signer, fixed child,
 per-run episode/findings and natural delivery acceptance remain separate.
 Timezone rules come from the installed IANA database; deployment must bind and
 verify that dependency along with the source artifact. No production schedule,
