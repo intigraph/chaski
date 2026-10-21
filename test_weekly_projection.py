@@ -6,6 +6,7 @@ import pytest
 
 from scheduled_projection import ScheduledProjection
 from scheduled_receiver import ExecutionScope, run_id
+from test_scheduled_catalogue_adapter import setup as adapter_setup_fixture
 from test_scheduled_projection import catalogue as fixed_catalogue
 from weekly_projection import WeeklyScheduledProjection
 
@@ -90,10 +91,15 @@ def test_fixed_and_weekly_contracts_cannot_substitute(weekly):
         replace(p, anchor_s=p.anchor_s + 60)
 
 
-def test_adapter_v2_uses_actual_reader_process_and_advertises_calendar_changes(setup):
+@pytest.fixture
+def adapter_process(tmp_path):
+    return adapter_setup_fixture.__wrapped__(tmp_path)
+
+
+def test_adapter_v2_uses_actual_reader_process_and_advertises_calendar_changes(adapter_process):
     # Reuse the process/owned-config fixture, replacing only the projection and
     # typed reader output with the explicit weekly protocol.
-    _, config, _, report, counter, _, run = setup
+    _, config, _, report, counter, _, run = adapter_process
     p = weekly.__wrapped__()
     import json
     config.update(version=2, projection=asdict(p))
@@ -111,7 +117,3 @@ def test_adapter_v2_uses_actual_reader_process_and_advertises_calendar_changes(s
     config['version'] = 1  # old mode must refuse the weekly object, not approximate
     result = run(dict(now=p.anchor_s, discover=True))
     assert result.returncode == 2 and not result.stdout and counter.read_text() == '1'
-
-
-# This imported pytest fixture performs no work until requested by the test.
-from test_scheduled_catalogue_adapter import setup

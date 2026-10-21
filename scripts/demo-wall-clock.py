@@ -7,7 +7,6 @@ import sys
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
-from wall_clock_schedule import WeeklyWallClock
 
 
 def ts(value):
@@ -19,6 +18,8 @@ def utc(value):
 
 
 def main():
+    from wall_clock_schedule import WeeklyWallClock
+
     base = 'fc3c017bdc91b3b08792577e5caf40b76f54904a'
     before = subprocess.run(['git', 'cat-file', '-e', base + ':wall_clock_schedule.py'],
                             cwd=SOURCE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
