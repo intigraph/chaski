@@ -9,6 +9,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import os
+import sys
+import shutil
+import subprocess
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
@@ -118,6 +122,48 @@ class Publication(unittest.TestCase):
         with patch.object(Path, "lstat", side_effect=PermissionError("synthetic denied")):
             with self.assertRaisesRegex(ValueError, "cannot inspect publication hold"):
                 publisher.held()
+
+    def test_readonly_verifier_keeps_nonpython_checkout_clean(self):
+        source = self.root / "clean-source"
+        (source / "scripts").mkdir(parents=True)
+        for name in (
+            "verify-repository-share.py",
+            "publish_repository_share.py",
+            "build-repository-share.py",
+            "build-repository-knowledge.py",
+        ):
+            shutil.copyfile(ROOT / name, source / "scripts" / name)
+        subprocess.run(["git", "init", "-q", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.org",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+        environment = dict(os.environ)
+        environment.pop("PYTHONDONTWRITEBYTECODE", None)
+        result = subprocess.run(
+            [sys.executable, str(source / "scripts/verify-repository-share.py"), "not-a-release", "a" * 40],
+            cwd=source,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid release identity", result.stderr)
+        status = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
+        self.assertEqual(status, "")
 
     def test_wait_is_bounded(self):
         calls, pauses = [], []

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("knowledge", ROOT / "scripts/build-repository-knowledge.py")
@@ -86,6 +88,43 @@ class AlignmentCarrier(unittest.TestCase):
             (target / "alignment-status.json").write_text(json.dumps(status))
             with self.assertRaisesRegex(ValueError, "mapping data"):
                 builder.alignment_carrier(root)
+
+
+class NativeIsolation(unittest.TestCase):
+    def test_real_subprocess_cannot_see_synthetic_global_config_or_endpoints(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            host, private = root / "host", root / "private"
+            private.mkdir()
+            config = host / ".config/bobbin"
+            config.mkdir(parents=True)
+            (config / "config.toml").write_text('[server]\nurl="http://127.0.0.1:9"\n')
+            self.assertTrue((config / "config.toml").exists())
+            code = (
+                "import os,json;from pathlib import Path;"
+                'visible=(Path(os.environ["HOME"])/".config/bobbin/config.toml").exists();'
+                "remote=any(k in os.environ for k in "
+                '("BOBBIN_SERVER","BOBBIN_QUIPU_REMOTE","QUIPU_SERVER","QUIPU_AUTH_TOKEN","GH_TOKEN"));'
+                'print(json.dumps({"global_config_visible":visible,"remote_or_upload_env_visible":remote}));'
+                "raise SystemExit(3 if visible or remote else 0)"
+            )
+            environment = {
+                "HOME": str(host),
+                "XDG_CONFIG_HOME": str(host / ".config"),
+                "BOBBIN_SERVER": "http://127.0.0.1:9",
+                "BOBBIN_QUIPU_REMOTE": "http://127.0.0.1:9",
+                "QUIPU_SERVER": "http://127.0.0.1:9",
+                "QUIPU_AUTH_TOKEN": "synthetic-only",
+                "GH_TOKEN": "synthetic-only",
+            }
+            with patch.dict(os.environ, environment):
+                output = builder.command([sys.executable, "-c", code], cwd=private)
+                policy_code = code.replace("3 if visible or remote else 0", "0 if visible and remote else 3")
+                policy = builder.command([sys.executable, "-c", policy_code], env=dict(os.environ), cwd=private)
+            self.assertIn('"global_config_visible": false', output)
+            self.assertIn('"remote_or_upload_env_visible": false', output)
+            self.assertIn('"global_config_visible": true', policy)
+            self.assertIn('"remote_or_upload_env_visible": true', policy)
 
 
 class Knowledge(unittest.TestCase):

@@ -14,7 +14,12 @@ import time
 
 spec = importlib.util.spec_from_file_location("publisher", Path(__file__).with_name("publish_repository_share.py"))
 publisher = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(publisher)
+_previous_bytecode = sys.dont_write_bytecode
+try:
+    sys.dont_write_bytecode = True
+    spec.loader.exec_module(publisher)
+finally:
+    sys.dont_write_bytecode = _previous_bytecode
 
 
 def verify(folder, tag, revision):
