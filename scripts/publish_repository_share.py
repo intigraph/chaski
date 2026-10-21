@@ -121,7 +121,12 @@ def publish(tag, revision, output):
             "bobbin_share_build", source / "scripts/build-repository-share.py"
         )
         builder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(builder)
+        _previous_bytecode = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = True
+            spec.loader.exec_module(builder)
+        finally:
+            sys.dont_write_bytecode = _previous_bytecode
         builder.build(revision, source, tooling, binary, bobbin, stage)
         archive_name = "chaski-" + tag + "-repository.pendant.tar.gz"
         prepared = private / "assets"
