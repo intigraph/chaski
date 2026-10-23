@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/intigraph/chaski/compare/v0.2.1...v0.2.2) (2026-10-23)
+
+
+### Documentation
+
+* synchronize the canonical stack overview ([#40](https://github.com/intigraph/chaski/issues/40)) ([1e88d7f](https://github.com/intigraph/chaski/commit/1e88d7f523fc9ec8f92a8974a11501025e74cba7))
+
 ## [0.2.1](https://github.com/intigraph/chaski/compare/v0.2.0...v0.2.1) (2026-10-22)
 
 
