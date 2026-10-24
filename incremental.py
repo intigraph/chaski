@@ -14,6 +14,7 @@ import math
 import subprocess
 import urllib.parse
 
+from change_stream import StagedRecords
 from emitter import DELIVER_PER_TICK, ProtocolError, Runner, deliver_pending, observe, queue_recoveries
 
 LOG = logging.getLogger("chaski.changes")
@@ -278,7 +279,7 @@ class ChangeFeed:
         if row is not None and row[0] != since:
             raise ProtocolError("stale change delivery")
         records, watermark, cursor = out["records"], out["watermark_tx"], out["next_tx"]
-        if not isinstance(records, list) or type(watermark) is not int or type(cursor) is not int:
+        if not isinstance(records, (list, StagedRecords)) or type(watermark) is not int or type(cursor) is not int:
             raise ProtocolError("invalid change page")
         if watermark < 0 or cursor < 0 or (row is not None and cursor > watermark):
             raise ProtocolError("change cursor outside committed prefix")
@@ -288,19 +289,24 @@ class ChangeFeed:
                                       or stream_id != cursor or stream_id <= since):
             raise ProtocolError("stream ID is not the durable transaction cursor")
         cursor = cursor if row and (records or stream_id is not None) else watermark
-        deliveries = []
-        for r in records if row else []:
-            if (not isinstance(r, dict) or type(r.get("tx")) is not int
-                    or type(r.get("sequence")) is not int or r["sequence"] < 0
-                    or not since < r["tx"] <= cursor
-                    or r.get("op") not in {"assert", "retract", "tombstone"}):
-                raise ProtocolError("invalid change record")
-            for runner in self.runners:
-                if runner.accepts(r):
-                    deliveries.append((runner.emitter.label, r["tx"], r["sequence"], json.dumps(r)))
+        dirty = set()
+        def deliveries():
+            # SQLite consumes this generator inside ONE transaction. A bad late
+            # record rolls back earlier inbox inserts as well as the cursor;
+            # multipart staging never becomes a whole-transaction Python list.
+            for r in records if row else []:
+                if (not isinstance(r, dict) or type(r.get("tx")) is not int
+                        or type(r.get("sequence")) is not int or r["sequence"] < 0
+                        or not since < r["tx"] <= cursor
+                        or r.get("op") not in {"assert", "retract", "tombstone"}):
+                    raise ProtocolError("invalid change record")
+                for runner in self.runners:
+                    if runner.accepts(r):
+                        dirty.add(runner.emitter.label)
+                        yield runner.emitter.label, r["tx"], r["sequence"], json.dumps(r)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.executemany("INSERT OR IGNORE INTO change_inbox VALUES (?,?,?,?)", deliveries)
+            self.conn.executemany("INSERT OR IGNORE INTO change_inbox VALUES (?,?,?,?)", deliveries())
             self.conn.execute("INSERT OR REPLACE INTO change_cursor VALUES (1,?)", (cursor,))
             self.conn.execute("COMMIT")
         except BaseException:
@@ -309,7 +315,7 @@ class ChangeFeed:
         self.lag = watermark - cursor
         self.cursor_tx = cursor
         self.ready = True
-        self.dirty.update(row[0] for row in deliveries)
+        self.dirty.update(dirty)
         if row is None:
             self.dirty.update(r.emitter.label for r in self.runners)
         return row is not None and cursor > since and cursor < watermark
