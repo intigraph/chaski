@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/intigraph/chaski/compare/v0.2.2...v0.2.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* consume multipart change transactions after verified commit ([#42](https://github.com/intigraph/chaski/issues/42)) ([7527131](https://github.com/intigraph/chaski/commit/75271313a0a93f9980d7af1f012695f4c6f57fdd))
+
 ## [0.2.2](https://github.com/intigraph/chaski/compare/v0.2.1...v0.2.2) (2026-10-23)
 
 
