@@ -7,6 +7,8 @@ In the Inca empire, chaski were the relay runners who carried quipus between
 stations. This one carries what the graph learned to the people and systems who
 need to act on it.
 
+## Stack overview
+
 ## What it does
 
 quipu records facts. chaski watches for facts that call for action, and acts:
@@ -83,7 +85,7 @@ emitters:
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/scbrown/chaski/blob/main/LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/intigraph/chaski/blob/main/LICENSE).
 
 ### Incremental verdict adapters
 
@@ -260,5 +262,3 @@ This library does not schedule jobs, authenticate senders, admit executable
 manifests, sign transitions, or export runs. Those remain the integrating
 receiver's responsibilities. A stored outcome is not signed workflow acceptance.
 No runtime configuration enables this library automatically.
-
-## The stack

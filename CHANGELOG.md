@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.2](https://github.com/intigraph/chaski/compare/v0.2.1...v0.2.2) (2026-10-23)
+
+
+### Documentation
+
+* synchronize the canonical stack overview ([#40](https://github.com/intigraph/chaski/issues/40)) ([1e88d7f](https://github.com/intigraph/chaski/commit/1e88d7f523fc9ec8f92a8974a11501025e74cba7))
+
+## [0.2.1](https://github.com/intigraph/chaski/compare/v0.2.0...v0.2.1) (2026-10-22)
+
+
+### Documentation
+
+* synchronize the canonical stack overview ([#38](https://github.com/intigraph/chaski/issues/38)) ([4573e4f](https://github.com/intigraph/chaski/commit/4573e4fbc070c52039b67064c68612bf11c64a75))
+
+## [0.2.0](https://github.com/scbrown/chaski/compare/v0.1.0...v0.2.0) (2026-10-21)
+
+
+### Features
+
+* block reactor on heap deadlines and matching change events ([#32](https://github.com/scbrown/chaski/issues/32)) ([6a7ecd7](https://github.com/scbrown/chaski/commit/6a7ecd72395e6ba68bbf2876dbe7594e86b91596))
+* bridge admitted scheduled slots to signed-run ports ([#24](https://github.com/scbrown/chaski/issues/24)) ([ed83911](https://github.com/scbrown/chaski/commit/ed83911f3e24479e671768d27c74d32a0503fe18))
+* **receiver:** bridge signed phases through the fixed Shuttle CLI ([#26](https://github.com/scbrown/chaski/issues/26)) ([87157ea](https://github.com/scbrown/chaski/commit/87157eaf14e593dcd971733a0a62d679085ece8c))
+* **schedule:** compute weekly wall-clock UTC deadlines ([#36](https://github.com/scbrown/chaski/issues/36)) ([5dc2cc6](https://github.com/scbrown/chaski/commit/5dc2cc663bfc36fb042076bb797eed2e0dcadd20))
+* **scheduled:** signed scheduled work chain — receiver, executor, sink factory, catalogue adapter (folds [#28](https://github.com/scbrown/chaski/issues/28)-[#31](https://github.com/scbrown/chaski/issues/31)) ([#31](https://github.com/scbrown/chaski/issues/31)) ([226aba0](https://github.com/scbrown/chaski/commit/226aba02df6272df3e78b4b5f8d3f85494f8f561))
+
+
+### Bug Fixes
+
+* require fresh bounded failure-family measurements ([#33](https://github.com/scbrown/chaski/issues/33)) ([fc3c017](https://github.com/scbrown/chaski/commit/fc3c017bdc91b3b08792577e5caf40b76f54904a))
+
 ## 0.1.0 (2026-10-15)
 
 
