@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/intigraph/chaski/compare/v0.2.3...v0.2.4) (2026-10-25)
+
+
+### Bug Fixes
+
+* **inbox:** index entity routing to avoid disk sort spill ([#44](https://github.com/intigraph/chaski/issues/44)) ([6e112f4](https://github.com/intigraph/chaski/commit/6e112f48a9126b6e145ab454489709747326c9d4))
+
 ## [0.2.3](https://github.com/intigraph/chaski/compare/v0.2.2...v0.2.3) (2026-10-24)
 
 
