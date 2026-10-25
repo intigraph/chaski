@@ -1,0 +1,3 @@
+Synthetic source fixture: real SQLite; feed and metrics calls mocked; no server contacted.
+before: {"durable_cursor": 9, "resumed_cursor": 9, "startup_feed_reads": 1}
+after:  {"durable_cursor": 9, "resumed_cursor": 9, "startup_feed_reads": 0}

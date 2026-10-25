@@ -538,20 +538,53 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--emitter-db", type=Path, help="emitter state (default: beside --state)")
     ap.add_argument("--emitter-write-interval", type=float, default=5.0,
                     help="GLOBAL minimum seconds between sink writes, across all emitters")
-    ap.add_argument("--changes-stream", action="store_true",
-                    help="use committed transaction stream for incremental emitters")
+    ap.add_argument("--changes-stream", action=argparse.BooleanOptionalAction, default=True,
+                    help="use committed transaction stream (default); requires existing durable cursor")
+    ap.add_argument("--bind-change-source", type=Path,
+                    help="explicit local transition: protected store_id/log_epoch JSON")
+    ap.add_argument("--expected-change-cursor", type=int,
+                    help="exact existing cursor for the reviewed source-binding transition")
     args = ap.parse_args(argv)
+    if args.bind_change_source is not None:
+        if args.expected_change_cursor is None or args.once:
+            ap.error('source binding requires an exact cursor and cannot evaluate rules')
+    elif args.expected_change_cursor is not None:
+        ap.error('--expected-change-cursor requires --bind-change-source')
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     from consumer_lease import ConsumerLease, ConsumerLeaseError
 
-    inbox = (args.emitter_db or args.state.with_name("emitter.db")) if args.emitters else None
+    inbox = ((args.emitter_db or args.state.with_name("emitter.db"))
+             if args.emitters or args.bind_change_source else None)
+    if args.bind_change_source is not None and not inbox.is_file():
+        ap.error('source binding requires existing inbox custody; no initialization')
     try:
         with ConsumerLease(args.state, inbox):
+            if args.bind_change_source is not None:
+                return _bind_consumer_source(args, inbox)
             return run_consumer(args)
     except ConsumerLeaseError as exc:
         LOG.error("%s", exc)
         return 2
+
+
+def _bind_consumer_source(args, inbox):
+    import sqlite3
+    from incremental import bind_stream_source
+
+    if not inbox.is_file():
+        raise RuntimeError('source binding requires existing inbox custody')
+    with args.bind_change_source.open('rb') as file:
+        raw = file.read(4097)
+    if len(raw) > 4096:
+        raise RuntimeError('change source identity exceeds budget')
+    conn = sqlite3.connect(inbox, isolation_level=None)
+    try:
+        bind_stream_source(conn, json.loads(raw), args.expected_change_cursor)
+    finally:
+        conn.close()
+    print(json.dumps({'status': 'BOUND', 'cursor': args.expected_change_cursor}))
+    return 0
 
 
 def run_consumer(args) -> int:
@@ -610,10 +643,15 @@ def _serve_consumer(args, reactor, rules):
         return 0
     if args.changes_stream and reactor.change_feed is not None:
         from change_stream import ChangeStream
-        reactor.change_feed.poll()  # retain existing bootstrap-to-tail semantics
         row = reactor.change_feed.conn.execute("SELECT tx FROM change_cursor WHERE id=1").fetchone()
         if row is None:
-            raise RuntimeError("cannot start stream without a durable bootstrap cursor")
+            raise RuntimeError("stream requires an explicitly bootstrapped durable cursor; no tail reset")
+        from incremental import require_stream_source
+        require_stream_source(reactor.change_feed.conn)
+        # Existing custody is the resume point. A startup GET could both poll
+        # and move that point before the stream had delivered anything.
+        reactor.change_feed.cursor_tx = row[0]
+        reactor.change_feed.ready = True
         reactor.change_stream = ChangeStream(reactor.quipu, row[0])
     serve_metrics(reactor, args.metrics_port)
     shutdown = threading.Event()

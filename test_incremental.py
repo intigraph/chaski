@@ -200,9 +200,10 @@ def test_stream_named_graph_delivery_commits_inbox_before_resume(setup):
     conn, _, runner, _ = setup
     runner.graphs = {"urn:tests:work-board"}
     conn.execute("INSERT INTO change_cursor VALUES (1,10)")
+    inc.bind_stream_source(conn, {"store_id": "fixture", "log_epoch": "one"}, 10)
     feed = inc.ChangeFeed(Feed([]), [runner])
     page = {"records": [change(11, graph="urn:tests:work-board")],
-            "next_tx": 11, "watermark_tx": 12}
+            "next_tx": 11, "watermark_tx": 12, "source": {"store_id": "fixture", "log_epoch": "one"}}
     feed.accept_page(page, 10, stream_id=11)
     assert conn.execute("SELECT tx FROM change_cursor").fetchone()[0] == 11
     assert conn.execute("SELECT tx FROM change_inbox").fetchall() == [(11,)]
@@ -214,10 +215,12 @@ def test_stream_named_graph_delivery_commits_inbox_before_resume(setup):
 def test_stream_failure_never_acknowledges_cursor(setup):
     conn, _, runner, _ = setup
     conn.execute("INSERT INTO change_cursor VALUES (1,10)")
+    inc.bind_stream_source(conn, {"store_id": "fixture", "log_epoch": "one"}, 10)
     conn.execute("CREATE TRIGGER refuse_delivery BEFORE INSERT ON change_inbox "
                  "BEGIN SELECT RAISE(ABORT,'fixture'); END")
     feed = inc.ChangeFeed(Feed([]), [runner])
-    page = {"records": [change(11)], "next_tx": 11, "watermark_tx": 11}
+    page = {"records": [change(11)], "next_tx": 11, "watermark_tx": 11,
+            "source": {"store_id": "fixture", "log_epoch": "one"}}
     with pytest.raises(Exception, match="fixture"):
         feed.accept_page(page, 10, stream_id=11)
     assert conn.execute("SELECT tx FROM change_cursor").fetchone()[0] == 10
@@ -231,8 +234,10 @@ def test_stream_failure_never_acknowledges_cursor(setup):
 def test_stream_invalid_prefix_keeps_cursor(setup, field, value):
     conn, _, runner, _ = setup
     conn.execute("INSERT INTO change_cursor VALUES (1,10)")
+    inc.bind_stream_source(conn, {"store_id": "fixture", "log_epoch": "one"}, 10)
     feed = inc.ChangeFeed(Feed([]), [runner])
-    page = {"records": [change(11)], "next_tx": 11, "watermark_tx": 11}
+    page = {"records": [change(11)], "next_tx": 11, "watermark_tx": 11,
+            "source": {"store_id": "fixture", "log_epoch": "one"}}
     page[field] = value
     with pytest.raises(ProtocolError):
         feed.accept_page(page, 10, stream_id=11)
@@ -250,6 +255,7 @@ def test_real_http_stream_reconnect_uses_only_committed_named_graph_cursor(setup
     conn, _, runner, _ = setup
     runner.graphs = {"urn:tests:work-board"}
     conn.execute("INSERT INTO change_cursor VALUES (1,10)")
+    inc.bind_stream_source(conn, {"store_id": "fixture", "log_epoch": "one"}, 10)
     observed = []
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -260,7 +266,7 @@ def test_real_http_stream_reconnect_uses_only_committed_named_graph_cursor(setup
             self.end_headers()
             if since == 10:
                 page = {"records": [change(11, graph="urn:tests:work-board")],
-                        "next_tx": 11, "watermark_tx": 11}
+                        "next_tx": 11, "watermark_tx": 11, "source": {"store_id": "fixture", "log_epoch": "one"}}
                 self.wfile.write(('event: quipu.changes\nid: 11\ndata: '+json.dumps(page)+'\n\n').encode())
                 self.wfile.flush()
         def log_message(self, *args):
@@ -298,6 +304,7 @@ def test_reactor_backlog_drains_event_woken_bounded_turns(setup, tmp_path, monke
     conn, _, runner, _ = setup
     runner.graphs = {"urn:tests:work-board"}
     conn.execute("INSERT INTO change_cursor VALUES (1,0)")
+    inc.bind_stream_source(conn, {"store_id": "fixture", "log_epoch": "one"}, 0)
     feed = inc.ChangeFeed(Feed([]), [runner])
     stream = object.__new__(ChangeStream)
     stream.cursor = 0
@@ -323,7 +330,8 @@ def test_reactor_backlog_drains_event_woken_bounded_turns(setup, tmp_path, monke
     def enqueue(tx):
         graph = "urn:tests:work-board" if tx == 13 else "urn:irrelevant"
         stream.pending.put_nowait((tx, {'records': [change(tx, graph=graph)],
-                                       'next_tx': tx, 'watermark_tx': 13}, Ack(tx)))
+                                       'next_tx': tx, 'watermark_tx': 13,
+                                       'source': {'store_id': 'fixture', 'log_epoch': 'one'}}, Ack(tx)))
         stream.wakeup.set()
     enqueue(1)
     original_pump = stream.pump

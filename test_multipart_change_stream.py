@@ -116,9 +116,19 @@ def test_malformed_multipart_never_yields_a_page(case):
 
 
 def test_stage_limit_refuses_before_accepting_parts(monkeypatch):
-    monkeypatch.setattr(cs, 'MAX_TRANSACTION_BYTES', 1, raising=False)
+    import change_frames
+    monkeypatch.setattr(change_frames, 'MAX_TRANSACTION_BYTES', 1)
     with pytest.raises(ProtocolError):
         next(cs.frames(io.BytesIO(wire(transaction()))))
+
+
+def test_shared_decoder_can_lower_but_not_raise_staging_budget():
+    import change_frames
+    with pytest.raises(change_frames.ProtocolError, match='totals'):
+        next(change_frames.frames(io.BytesIO(wire(transaction())), max_transaction_bytes=1))
+    with pytest.raises(change_frames.ProtocolError, match='staging budget'):
+        next(change_frames.frames(io.BytesIO(wire(transaction())),
+                                  max_transaction_bytes=change_frames.MAX_TRANSACTION_BYTES + 1))
 
 
 @pytest.mark.parametrize('complete', [False, True])
@@ -160,6 +170,8 @@ def feed(tmp_path):
     conn = connect(tmp_path / 'state.db')
     conn.executescript(SCHEMA)
     conn.execute('INSERT INTO change_cursor VALUES (1,10)')
+    from incremental import bind_stream_source
+    bind_stream_source(conn, {'store_id': 'urn:test:store', 'log_epoch': 'urn:test:epoch'}, 10)
     runner = SimpleNamespace(conn=conn, emitter=SimpleNamespace(label='test'), accepts=lambda record: True)
     return conn, ChangeFeed(None, [runner])
 
