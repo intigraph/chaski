@@ -178,11 +178,15 @@ retain the emitter's default policy. For example, a deployment can route
 `DreamCycle` and `DreamLane` as informational signals while directives remain
 warnings. Changing this map is a routing-policy change requiring review.
 
-### Committed transaction stream (opt-in)
+### Committed transaction stream
 
-`--changes-stream` moves incremental emitter change delivery to the read-only
-`/changes/stream` SSE endpoint. Existing configurations keep the poll path.
-Bootstrap retains the existing tail-before-discovery behavior. Transaction IDs
+Incremental emitters use the read-only `/changes/stream` SSE endpoint by default.
+`--changes-stream` remains accepted; `--no-changes-stream` explicitly selects the
+legacy polling path for rollback. Stream startup resumes the existing durable
+SQLite cursor without a preliminary `GET /changes`. Missing custody refuses to
+start: it does not invent a cursor or skip history to the current tail. A new
+installation needs a separately reviewed bootstrap before starting the stream.
+Changing transport never resets an existing inbox or cursor. Transaction IDs
 are local durable change cursors; they are not `/events/commit` event offsets.
 The reader queues one complete frame and waits for the reactor thread to commit
 both routed inbox records and the cursor before accepting another. The reactor drains up to64 pages in a50ms burst
@@ -198,6 +202,13 @@ reconciliation retain their existing behavior. This flag does not move the
 separate ROOT event-rule consumer to SSE. Closing a network reader can wait for
 its bounded 45-second socket timeout. Source tests are not permission to enable
 this flag, replay production history or claim natural scheduled acceptance.
+
+The standard-library-only `change_frames` module is the canonical SSE and
+multipart decoder. `frames(response, max_transaction_bytes=...)` permits a
+consumer to lower the staging budget, never raise it. It yields only complete,
+digest-verified transactions; callers close `StagedRecords` after durable local
+custody. Consumers still validate their selected graph, source identity and
+cursor before acknowledging. The decoder does not project RDF or advance state.
 
 ### Repeated command failures
 

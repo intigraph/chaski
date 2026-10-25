@@ -538,8 +538,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--emitter-db", type=Path, help="emitter state (default: beside --state)")
     ap.add_argument("--emitter-write-interval", type=float, default=5.0,
                     help="GLOBAL minimum seconds between sink writes, across all emitters")
-    ap.add_argument("--changes-stream", action="store_true",
-                    help="use committed transaction stream for incremental emitters")
+    ap.add_argument("--changes-stream", action=argparse.BooleanOptionalAction, default=True,
+                    help="use committed transaction stream (default); requires existing durable cursor")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -610,10 +610,13 @@ def _serve_consumer(args, reactor, rules):
         return 0
     if args.changes_stream and reactor.change_feed is not None:
         from change_stream import ChangeStream
-        reactor.change_feed.poll()  # retain existing bootstrap-to-tail semantics
         row = reactor.change_feed.conn.execute("SELECT tx FROM change_cursor WHERE id=1").fetchone()
         if row is None:
-            raise RuntimeError("cannot start stream without a durable bootstrap cursor")
+            raise RuntimeError("stream requires an explicitly bootstrapped durable cursor; no tail reset")
+        # Existing custody is the resume point. A startup GET could both poll
+        # and move that point before the stream had delivered anything.
+        reactor.change_feed.cursor_tx = row[0]
+        reactor.change_feed.ready = True
         reactor.change_stream = ChangeStream(reactor.quipu, row[0])
     serve_metrics(reactor, args.metrics_port)
     shutdown = threading.Event()

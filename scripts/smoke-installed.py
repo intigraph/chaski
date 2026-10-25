@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-MODULES = ["alertmanager_sink", "change_stream", "chaski", "command_sink", "consumer_lease",
+MODULES = ["alertmanager_sink", "change_frames", "change_stream", "chaski", "command_sink", "consumer_lease",
            "demo", "emitter", "external_event", "failure_family_adapter", "graph_sink", "incremental", "once"]
 
 
