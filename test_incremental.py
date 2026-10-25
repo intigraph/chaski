@@ -342,3 +342,38 @@ def test_reactor_backlog_drains_event_woken_bounded_turns(setup, tmp_path, monke
     assert conn.execute("SELECT tx FROM change_cursor").fetchone()[0] == 13
     assert conn.execute("SELECT tx FROM change_inbox").fetchall() == [(13,)]
     assert stream.pending.empty() and stream.pending.maxsize == 1
+
+
+def test_old_inbox_adopts_entity_index_without_rewriting_state(setup):
+    conn, e, _, _ = setup
+    conn.execute("DROP INDEX IF EXISTS change_inbox_entity")
+    conn.execute("INSERT INTO change_cursor VALUES (1,42)")
+    conn.executemany("INSERT INTO change_inbox VALUES ('e',?,0,?)",
+                     [(tx, json.dumps(change(tx, item)))
+                      for tx, item in [(2, 'a'), (3, 'b'), (4, 'c'), (7, 'a')]])
+    before = list(conn.execute("SELECT * FROM change_inbox ORDER BY emitter,tx,seq"))
+    twice = [inc.ChangeRunner(e, conn, Sink()), inc.ChangeRunner(e, conn, Sink())]
+    assert list(conn.execute("SELECT * FROM change_inbox ORDER BY emitter,tx,seq")) == before
+    assert conn.execute("SELECT tx FROM change_cursor").fetchone() == (42,)
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(change_inbox)")}
+    assert 'change_inbox_entity' in indexes
+    # Use the actual routing SELECT, not a second query with different semantics.
+    query = next(value for value in twice[0].route_pending.__code__.co_consts
+                 if isinstance(value, str) and value.startswith("SELECT tx,seq,payload"))
+    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query, ('e','e',inc.BATCH))]
+    assert not any('TEMP B-TREE FOR GROUP BY' in step for step in plan), plan
+
+
+def test_entity_index_preserves_oldest_entity_batch_and_all_its_changes(setup):
+    conn, _, runner, calls = setup
+    entries = [(2, 'a'), (3, 'b'), (4, 'c'), (7, 'a')]
+    conn.executemany("INSERT INTO change_inbox VALUES ('e',?,0,?)",
+                     [(tx, json.dumps(change(tx, item))) for tx,item in entries])
+    conn.execute("INSERT INTO change_inbox VALUES ('another',1,0,?)", (json.dumps(change(1, 'x')),))
+    conn.execute("INSERT INTO change_cursor VALUES (1,42)")
+    calls.clear()
+    runner.route_pending(100)
+    assert [(row['tx'],row['entity']) for row in calls[-1]['route']] == [(2,'a'),(3,'b'),(7,'a')]
+    assert list(conn.execute("SELECT emitter,tx FROM change_inbox ORDER BY emitter,tx")) == [('another',1),('e',4)]
+    assert list(conn.execute("SELECT item FROM adapter_deadlines ORDER BY item")) == [('a',),('b',)]
+    assert conn.execute("SELECT tx FROM change_cursor").fetchone() == (42,)
