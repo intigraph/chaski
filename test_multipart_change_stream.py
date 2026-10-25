@@ -170,6 +170,8 @@ def feed(tmp_path):
     conn = connect(tmp_path / 'state.db')
     conn.executescript(SCHEMA)
     conn.execute('INSERT INTO change_cursor VALUES (1,10)')
+    from incremental import bind_stream_source
+    bind_stream_source(conn, {'store_id': 'urn:test:store', 'log_epoch': 'urn:test:epoch'}, 10)
     runner = SimpleNamespace(conn=conn, emitter=SimpleNamespace(label='test'), accepts=lambda record: True)
     return conn, ChangeFeed(None, [runner])
 

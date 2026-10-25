@@ -188,6 +188,19 @@ start: it does not invent a cursor or skip history to the current tail. A new
 installation needs a separately reviewed bootstrap before starting the stream.
 Changing transport never resets an existing inbox or cursor. Transaction IDs
 are local durable change cursors; they are not `/events/commit` event offsets.
+An integer cursor alone is insufficient: startup also requires an immutable
+`store_id`/`log_epoch` binding in that same inbox database. At a separately
+reviewed stopped-consumer boundary, provide a protected JSON file with exactly
+those two independently verified nonempty strings, and invoke the existing
+command with `--bind-change-source identity.json --expected-change-cursor N`.
+Use the normal `--state` and `--emitter-db` paths. This local transition holds
+both consumer leases; it reads no rules or network, requires the exact current
+cursor, and changes neither cursor nor pending inbox. Repeating the same binding
+is idempotent; replacing it is refused. Normal startup never creates a binding.
+Each delivered transaction must match both values before inbox or cursor changes
+commit. Missing identity, a replaced store or a new epoch refuses admission;
+restoring transport is not authority to adopt a new source. This source change
+does not execute the transition on an installed consumer.
 The reader queues one complete frame and waits for the reactor thread to commit
 both routed inbox records and the cursor before accepting another. The reactor drains up to64 pages in a50ms burst
 (budget checked between commits), then gives adapters/deadlines their turn.

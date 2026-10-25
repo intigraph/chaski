@@ -18,6 +18,8 @@ def probe(module):
     db.execute('CREATE TABLE change_cursor(id INTEGER PRIMARY KEY, tx INTEGER)')
     db.execute('INSERT INTO change_cursor VALUES(1,9)')
     db.commit()
+    from incremental import bind_stream_source
+    bind_stream_source(db, {'store_id': 'fixture', 'log_epoch': 'one'}, 9)
     calls, opened = [], []
     feed = SimpleNamespace(conn=db, ready=False, cursor_tx=-1,
                            poll=lambda: calls.append('GET /changes'))

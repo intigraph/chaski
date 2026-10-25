@@ -233,6 +233,47 @@ class ChangeRunner(Runner):
         return lines
 
 
+def _source_identity(value):
+    if (not isinstance(value, dict) or set(value) != {'store_id', 'log_epoch'}
+            or any(not isinstance(v, str) or not v for v in value.values())):
+        raise ProtocolError('explicit change store and epoch required')
+    return value['store_id'], value['log_epoch']
+
+
+def require_stream_source(conn, identity=None):
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_source'").fetchone()
+    if not exists:
+        raise ProtocolError('change source unbound; explicit reviewed transition required')
+    rows = conn.execute('SELECT store_id,log_epoch FROM change_source').fetchall()
+    if len(rows) != 1:
+        raise ProtocolError('ambiguous durable change source')
+    bound = _source_identity(dict(zip(('store_id', 'log_epoch'), rows[0])))
+    if identity is not None and _source_identity(identity) != bound:
+        raise ProtocolError('change store or epoch changed; cursor retained')
+    return bound
+
+
+def bind_stream_source(conn, identity, expected_cursor):
+    """Explicit local transition; caller holds both normal consumer leases."""
+    source = _source_identity(identity)
+    if type(expected_cursor) is not int or not 0 <= expected_cursor <= 9223372036854775807:
+        raise ProtocolError('exact existing change cursor required')
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if conn.execute('SELECT tx FROM change_cursor WHERE id=1').fetchall() != [(expected_cursor,)]:
+            raise ProtocolError('change cursor differs from transition')
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_source'").fetchone()
+        if exists:
+            require_stream_source(conn, identity)
+        else:
+            conn.execute('CREATE TABLE change_source(store_id TEXT NOT NULL,log_epoch TEXT NOT NULL)')
+            conn.execute('INSERT INTO change_source VALUES (?,?)', source)
+        conn.execute('COMMIT')
+    except BaseException:
+        conn.execute('ROLLBACK')
+        raise
+
+
 class ChangeFeed:
     def __init__(self, quipu, runners):
         self.quipu, self.runners = quipu, runners
@@ -310,6 +351,9 @@ class ChangeFeed:
                         yield runner.emitter.label, r["tx"], r["sequence"], json.dumps(r)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            if stream_id is not None:
+                _source_identity(out.get('source'))
+                require_stream_source(self.conn, out['source'])
             self.conn.executemany("INSERT OR IGNORE INTO change_inbox VALUES (?,?,?,?)", deliveries())
             self.conn.execute("INSERT OR REPLACE INTO change_cursor VALUES (1,?)", (cursor,))
             self.conn.execute("COMMIT")

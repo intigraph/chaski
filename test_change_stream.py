@@ -76,6 +76,8 @@ def test_stream_start_resumes_existing_custody_without_poll(tmp_path, monkeypatc
     conn.execute('CREATE TABLE change_cursor(id INTEGER PRIMARY KEY, tx INTEGER)')
     conn.execute('INSERT INTO change_cursor VALUES(1,?)', (cursor,))
     conn.commit()
+    from incremental import bind_stream_source
+    bind_stream_source(conn, {'store_id': 'fixture', 'log_epoch': 'one'}, cursor)
     feed = SimpleNamespace(conn=conn, cursor_tx=-1, ready=False,
                            poll=lambda: pytest.fail('startup must not GET /changes'))
     opened = []
