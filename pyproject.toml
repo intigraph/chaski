@@ -1,6 +1,6 @@
 [project]
 name = "chaski-reactor"
-version = "0.2.3"
+version = "0.2.4"
 description = "Reactions and notifications when your knowledge graph changes"
 readme = "README.md"
 license = "Apache-2.0"
