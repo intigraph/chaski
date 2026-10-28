@@ -237,7 +237,13 @@ using those paths refuses loudly with exit code 2, including `--once`. Use
 separate private state paths for an independent diagnostic invocation.
 
 The inbox lock follows the database inode, so symbolic-link and hard-link
-aliases do not admit a second owner. The legacy cursor also has a stable
+aliases do not admit a second owner. On Darwin, custody uses an inode-keyed
+kernel lock in the real account home's private `.local/state/chaski/inode-leases`
+directory, while retaining an open database descriptor. This avoids an exclusive
+`flock` on the database conflicting with SQLite WAL locking. The real account
+home is resolved independently of environment overrides, so changing `HOME` does
+not split custody. Never unlink these inode lease files while consumers run.
+Linux retains its direct database inode lock. The legacy cursor also has a stable
 `.consumer-lease` sidecar beside its canonical path. Keep the sidecar in place;
 unlinking or replacing a live lease or database can split ownership. Kernel
 locks release on process exit, including crashes, and acquisition failures

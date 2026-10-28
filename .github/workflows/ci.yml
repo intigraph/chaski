@@ -59,6 +59,9 @@ jobs:
         with:
           version: "0.12.0"
       - run: uv build
+      - name: Prove Darwin inbox custody permits SQLite WAL and excludes aliases
+        if: runner.os == 'macOS'
+        run: uv run --locked python -m pytest -q test_consumer_lease.py
       - name: Prove the installed wheel outside the checkout
         shell: bash
         run: |
