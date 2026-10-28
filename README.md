@@ -16,6 +16,13 @@ Set `STACK_INSTALL_ROOT` on the receiving shell for another prefix.
 Pinned releases, alternatives, configuration and removal are in the
 [installation and usage reference](docs/installation-reference.md).
 
+## Agent orientation
+
+Run `chaski prime` (`--brief`, `--json`, `--static`, or `--section core`) before
+receiver setup. See the [primer](docs/agent-primer.md) and
+[skill](skills/chaski/SKILL.md). Prime reads only explicit sources and starts no
+receiver, adapter or delivery.
+
 ## Try it
 
 Inspect the installed receiver's options:

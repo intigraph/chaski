@@ -31,6 +31,7 @@ chaski-state-key-migrate = "state_key_migration:main"
 
 [tool.setuptools]
 py-modules = [
+    "chaski_prime", "chaski_prime_state", "chaski_primer",
     "alertmanager_sink", "async_scheduled_sink", "change_frames", "change_stream", "chaski", "command_sink",
     "consumer_lease", "deadline_heap", "demo", "emitter", "external_event", "failure_family_adapter",
     "fixed_outcome_executor", "graph_sink", "incremental", "once", "scheduled_catalogue_adapter", "scheduled_event_sink", "scheduled_projection", "scheduled_receiver", "scheduled_sink_factory", "shuttle_process_port", "slot_receiver", "state_key_migration", "wall_clock_schedule", "weekly_projection",
