@@ -1,0 +1,49 @@
+# chaski GitHub routing rules (docs/github-routing.md). NOT ACTIVE: nothing
+# reads this file until an emitter names it (see "Enabling" in the doc).
+version: 1
+
+# The ONE operational graph camayoc's GitHub ingress writes into.
+graph: https://camayoc.local/operational/github
+
+# Work requests are assigned to, and outside contributions routed to, this agent.
+administrator: hammond
+
+# GitHub logins whose PRs the merge lane may merge. Any other author is an
+# outside contribution: never merged by the lane, routed to the administrator.
+# Every crew PR is opened by the one shared account today.
+members: [scbrown]
+
+# The receiver's state; the adapter reads its merge-lane table read-only.
+ledger: ~/.local/state/chaski/github-work.db
+
+# Activities older than this are not read (one bounded query per repo).
+window_days: 30
+
+defaults:
+  default_branch: main
+  review_after_minutes: 15        # CI green and unreviewed this long -> review job
+  required_checks: []             # names that must report green (empty: whatever ran)
+  approval_sources: [verdict]     # agent verdict records; github_review adds GitHub APPROVE reviews
+  merge: {enabled: true, spacing_minutes: 10, lease_minutes: 75}
+  triage: {enabled: true}
+  release: {jobs: [install, announce], include_prereleases: false, window_hours: 24}
+
+repos:
+  intigraph/quipu:
+    merge: {spacing_minutes: 10}  # every main merge deploys: one at a time, 10 min apart
+  intigraph/camayoc: {}
+  intigraph/chaski: {}
+  intigraph/shantytown: {}
+
+# Where work requests land.
+work_items:
+  kind: seeds                     # or {kind: jsonl, path: ...} for a dry run
+  argv_prefix: [sd]
+  labels: [chaski-github, automation]
+  priority: 1
+
+# How jobs start. stub records the exact `st agent spawn` call and starts
+# nothing; switch to `kind: st` once shantytown #406 is merged.
+spawner:
+  kind: stub
+  path: ~/.local/state/chaski/github-spawn-requests.jsonl
