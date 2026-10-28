@@ -13,6 +13,10 @@ administrator: hammond
 # Every crew PR is opened by the one shared account today.
 members: [scbrown]
 
+# The predicate review verdicts are signed for (aegis:Verdict predicateId).
+# Only verdicts quipu's /verdict/verify calls trusted count.
+review_predicate: chaski:github:pr-review/v1
+
 # The receiver's state; the adapter reads its merge-lane table read-only.
 ledger: ~/.local/state/chaski/github-work.db
 
@@ -23,7 +27,7 @@ defaults:
   default_branch: main
   review_after_minutes: 15        # CI green and unreviewed this long -> review job
   required_checks: []             # names that must report green (empty: whatever ran)
-  approval_sources: [verdict]     # agent verdict records; github_review adds GitHub APPROVE reviews
+  approval_sources: [verdict]     # signed, trusted agent verdicts; github_review adds GitHub APPROVE reviews
   merge: {enabled: true, spacing_minutes: 10, lease_minutes: 75}
   triage: {enabled: true}
   release: {jobs: [install, announce], include_prereleases: false, window_hours: 24}

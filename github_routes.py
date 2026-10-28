@@ -59,11 +59,14 @@ REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LOGIN = re.compile(r"^[A-Za-z0-9_.\[\]-]{1,64}$")
 IRI = re.compile(r"^https?://[^<>\s\"{}|\\^`]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
-APPROVE_WORDS = {"approve", "approved", "accept", "accepted"}
-CHANGES_WORDS = {"changes", "request-changes", "changes_requested", "reject", "rejected"}
-# Verdict records: the GateApproval split (camayoc agent-memory design 1.3)
-# plus the pre-migration aegis:Decision class, read through one release.
-VERDICT_CLASSES = ("GateApproval", "Decision")
+# Review verdicts are quipu SIGNED verdicts (aegis:Verdict): predicate, target,
+# outcome, evidence hash, tier and verifier are sealed by aegis:signature and
+# checked by quipu's /verdict/verify against the verifier registry. Only
+# `trusted` counts; an unsigned or untrusted record is no verdict at all.
+REVIEW_PREDICATE = "chaski:github:pr-review/v1"
+VERDICT_OUTCOMES = {"satisfied": "approve", "unsatisfied": "changes"}
+TARGET = re.compile(r"^github:pr:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)@([0-9a-f]{40})$")
+AMBIGUOUS = object()  # a PR with two declared author agents: unknown, never a fallback
 LANE_RECHECK_S = 300
 
 
@@ -113,6 +116,7 @@ class Config:
     window_days: int
     repos: dict[str, RepoConfig]
     raw: dict = field(default_factory=dict)
+    review_predicate: str = REVIEW_PREDICATE
 
     def is_member(self, login: str | None) -> bool:
         return bool(login) and login.lower() in self.members
@@ -144,7 +148,7 @@ def parse_config(doc: dict) -> Config:
     if not isinstance(doc, dict) or doc.get("version") != 1:
         raise ConfigError("config needs version: 1")
     known = {"version", "graph", "administrator", "members", "ledger", "window_days", "defaults", "repos",
-             "work_items", "spawner"}
+             "work_items", "spawner", "review_predicate"}
     if set(doc) - known:
         raise ConfigError(f"unknown top-level field(s) {sorted(set(doc) - known)}")
     graph = doc.get("graph")
@@ -181,10 +185,13 @@ def parse_config(doc: dict) -> Config:
     ledger = doc.get("ledger")
     if ledger is not None and not isinstance(ledger, str):
         raise ConfigError("ledger must be a path")
+    predicate = doc.get("review_predicate", REVIEW_PREDICATE)
+    if not isinstance(predicate, str) or not re.fullmatch(r"[A-Za-z0-9_.:/#-]{1,200}", predicate):
+        raise ConfigError("review_predicate must be the predicate id review verdicts are signed for")
     return Config(graph=graph, administrator=admin, members=frozenset(m.lower() for m in members),
                   ledger=Path(ledger).expanduser() if ledger else None,
                   window_days=_int(doc.get("window_days", 30), "window_days", 1, 365),
-                  repos=repos, raw=doc)
+                  repos=repos, raw=doc, review_predicate=predicate)
 
 
 def _repo_config(name: str, d: dict) -> RepoConfig:
@@ -306,17 +313,22 @@ def normalize_row(raw: dict) -> dict:
     return row
 
 
-def normalize_verdict(raw: dict) -> dict | None:
-    outcome = str(raw.get("outcome") or "").strip().lower()
-    verdict = "approve" if outcome in APPROVE_WORDS else "changes" if outcome in CHANGES_WORDS else None
-    sha = str(raw.get("sha") or "").lower()
+def review_target(repo: str, number: int, sha: str) -> str:
+    """The signed target of a review verdict: binds repo, PR AND exact head."""
+    return f"github:pr:{repo}#{number}@{sha}"
+
+
+def normalize_verdict(raw: dict, repo: str) -> dict | None:
+    """A TRUSTED verdict for this repo, or None. `at` is the instant quipu
+    recorded the signature (verify's as_of), which the signer cannot choose."""
+    m = TARGET.match(str(raw.get("target") or ""))
+    verdict = VERDICT_OUTCOMES.get(str(raw.get("outcome") or "").strip().lower())
     ts = epoch(raw.get("at"))
-    by = local(raw.get("by"))
-    if verdict is None or not SHA.match(sha) or ts is None or not by or not raw.get("pr"):
-        return None  # malformed records never count, either way
-    return {"v": str(raw.get("v") or ""), "pr": str(raw["pr"]), "sha": sha, "verdict": verdict,
-            "by": by.lower(), "ts": ts, "at": raw.get("at"),
-            "author": (local(raw.get("author")) or "").lower() or None}
+    by = local(raw.get("verifier"))
+    if raw.get("trusted") is not True or m is None or m.group(1) != repo or verdict is None or ts is None or not by:
+        return None  # unsigned, untrusted or malformed records never count, either way
+    return {"v": str(raw.get("v") or ""), "number": int(m.group(2)), "sha": m.group(3), "verdict": verdict,
+            "by": by.lower(), "ts": ts, "at": raw.get("at")}
 
 
 @dataclass
@@ -324,7 +336,7 @@ class Snapshot:
     """Everything one repository's rules read, for one evaluation."""
     rows: list[dict]
     verdicts: list[dict] = field(default_factory=list)
-    authors: dict[str, str] = field(default_factory=dict)  # PR IRI -> author agent (declared fact)
+    authors: dict = field(default_factory=dict)  # PR IRI -> author agent (declared fact) or AMBIGUOUS
 
 
 def _q(text: str) -> str:
@@ -352,16 +364,16 @@ def activity_query(graph: str, repo: str, since: str) -> str:
             % (AEGIS, graph, _q(repo), _q(since), AEGIS, opt, eopt))
 
 
-def verdict_query(graph: str, repo: str) -> str:
-    """Approving / changes verdicts about this repo's PRs, in ANY graph: the
-    reviewer job records them where its writer lives, not in the github graph."""
-    classes = ", ".join(f"aegis:{c}" for c in VERDICT_CLASSES)
-    return ("PREFIX aegis: <%s> SELECT ?v ?pr ?sha ?outcome ?by ?at ?author WHERE { "
-            "GRAPH <%s> { ?repo aegis:githubFullName %s . ?pr a aegis:GitHubPullRequest ; "
-            "aegis:inGitHubRepository ?repo . } "
-            "GRAPH ?g { ?v a ?t ; aegis:aboutGitHubEntity ?pr ; aegis:commitSha ?sha ; aegis:outcome ?outcome ; "
-            "aegis:by ?by ; aegis:recordedAt ?at . OPTIONAL { ?v aegis:authorAgent ?author } "
-            "FILTER(?t IN (%s)) } }" % (AEGIS, graph, _q(repo), classes))
+def verdict_query(repo: str, predicate: str = REVIEW_PREDICATE) -> str:
+    """Stored signed review verdicts about this repo's PRs, in any graph. The
+    graph is not trusted: every candidate goes through /verdict/verify."""
+    if not REPO.match(repo):
+        raise ValueError("invalid repo")
+    return ("PREFIX aegis: <%s> SELECT ?v ?target ?outcome ?hash ?tier ?verifier ?sig WHERE { GRAPH ?g { "
+            "?v a aegis:Verdict ; aegis:predicateId ?pred ; aegis:targetRef ?target ; aegis:outcome ?outcome ; "
+            "aegis:evidenceHash ?hash ; aegis:verifier ?verifier ; aegis:signature ?sig . "
+            "OPTIONAL { ?v aegis:tier ?tier } FILTER(STR(?pred) = %s) "
+            "FILTER(STRSTARTS(STR(?target), %s)) } }" % (AEGIS, _q(predicate), _q(f"github:pr:{repo}#")))
 
 
 def author_query(graph: str, repo: str) -> str:
@@ -373,21 +385,41 @@ def author_query(graph: str, repo: str) -> str:
 class QuipuFacts:
     """Reads over Quipu's public POST /query only."""
 
-    def __init__(self, base: str, graph: str, window_days: int, timeout: float = 15.0):
+    def __init__(self, base: str, graph: str, window_days: int, timeout: float = 15.0,
+                 predicate: str = REVIEW_PREDICATE):
         if not IRI.match(base):
             raise ValueError("quipu base must be an http(s) URL")
         self.base, self.graph, self.window_days, self.timeout = base.rstrip("/"), graph, window_days, timeout
+        self.predicate = predicate
 
-    def _rows(self, sparql: str) -> list[dict]:
+    def _post(self, path: str, body: dict) -> dict:
         req = urllib.request.Request(
-            self.base + "/query", data=json.dumps({"query": sparql}).encode(), method="POST",
+            self.base + path, data=json.dumps(body).encode(), method="POST",
             headers={"Content-Type": "application/json", "User-Agent": "chaski-github-routes/1",
                      "X-Quipu-Client": "chaski"})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                out = json.load(resp)
+                return json.load(resp)
         except Exception as exc:  # noqa: BLE001 — every failure is UNKNOWN
-            raise FactsUnknown(f"quipu /query failed: {exc}") from exc
+            raise FactsUnknown(f"quipu {path} failed: {exc}") from exc
+
+    def verify(self, row: dict) -> dict | None:
+        """quipu's signed-verdict check, as of when the store recorded the
+        signature. Returns the as_of instant when TRUSTED, else None."""
+        body = {"predicate_id": self.predicate, "target_ref": str(row["target"]), "outcome": str(row["outcome"]),
+                "evidence_hash": str(row["hash"]), "verifier": str(row["verifier"]),
+                "signature": str(row["sig"]), "verdict": str(row["v"])}
+        if row.get("tier"):
+            body["tier"] = str(row["tier"])
+        out = self._post("/verdict/verify", body)
+        if not isinstance(out, dict) or "error" in out:
+            return None  # quipu refused this record (e.g. no recorded signature): it does not count
+        if out.get("trusted") is not True or (out.get("as_of") or {}).get("basis") != "recorded":
+            return None
+        return out["as_of"]
+
+    def _rows(self, sparql: str) -> list[dict]:
+        out = self._post("/query", {"query": sparql})
         if not isinstance(out, dict) or "error" in out or out.get("truncated") or not isinstance(out.get("rows"), list):
             raise FactsUnknown(f"quipu /query incomplete: {str(out)[:200]}")
         return out["rows"]
@@ -395,14 +427,27 @@ class QuipuFacts:
     def snapshot(self, repo: str, now: float) -> Snapshot:
         since = iso(now - 86400 * self.window_days)
         rows = [normalize_row(r) for r in self._rows(activity_query(self.graph, repo, since))]
-        verdicts = [v for v in (normalize_verdict(r) for r in self._rows(verdict_query(self.graph, repo))) if v]
-        authors = {}
+        heads = {(p["number"], p["head"]) for p in _prs(rows).values() if p["state"] == "open"}
+        verdicts = []
+        for r in self._rows(verdict_query(repo, self.predicate)):
+            m = TARGET.match(str(r.get("target") or ""))
+            if not r.get("sig") or m is None or (int(m.group(2)), m.group(3)) not in heads:
+                continue  # unsigned, or about a head no rule reads: not verified, not counted
+            as_of = self.verify(r)
+            if as_of is None:
+                continue
+            v = normalize_verdict({**r, "trusted": True, "at": as_of.get("at")}, repo)
+            if v:
+                verdicts.append(v)
+        authors: dict[str, set] = {}
         for r in self._rows(author_query(self.graph, repo)):
             agent = local(r.get("agent"))
             if r.get("pr") and agent:
                 authors.setdefault(str(r["pr"]), set()).add(agent.lower())
-        # Two declared author agents is ambiguous: no author agent, so no merge.
-        return Snapshot(rows, verdicts, {pr: next(iter(a)) for pr, a in authors.items() if len(a) == 1})
+        # Two declared author agents is ambiguous: the PR has NO author agent
+        # (never "whichever one a verdict names"), so it is never approved.
+        return Snapshot(rows, verdicts, {pr: next(iter(a)) if len(a) == 1 else AMBIGUOUS
+                                         for pr, a in authors.items()})
 
     def repos_of(self, iris: set[str]) -> set[str]:
         if not iris:
@@ -575,16 +620,18 @@ def _github_reviews(rows: list[dict]) -> dict[int, list[dict]]:
 def approval(pr: dict, snap: Snapshot, gh_reviews: list[dict], sources: tuple[str, ...]) -> dict:
     """Approval state of the PR's CURRENT head.
 
-    verdict source: agent verdict records. The reviewer must be a different
-    AGENT from the PR's author agent: every PR and review comes from one shared
-    GitHub account, so logins cannot tell author from reviewer. The author
-    agent is the declared `authoredByAgent` fact, else what the verdict states;
-    unknown means not approved.
+    verdict source: quipu signed review verdicts that /verdict/verify calls
+    trusted. The verifier must be a different AGENT from the PR's author
+    agent: every PR and review comes from one shared GitHub account, so logins
+    cannot tell author from reviewer. The author agent is ONLY the declared
+    `authoredByAgent` fact; absent or ambiguous means not approved. A verdict
+    never says who the author is.
     github_review source: GitHub reviews by a login other than the PR author.
     The latest word of each reviewer on this head counts; a later CHANGES
     from anyone but the author blocks."""
     head = pr["head"]
-    author_agent = snap.authors.get(pr["iri"])
+    declared = snap.authors.get(pr["iri"])
+    author_agent = None if declared is AMBIGUOUS else declared
     author_login = (pr["author"] or "").lower()
     words: dict[tuple, dict] = {}
     reviewed = []
@@ -593,14 +640,13 @@ def approval(pr: dict, snap: Snapshot, gh_reviews: list[dict], sources: tuple[st
     # reviewed head never gets a second review job; it approves only when the
     # verdict source is enabled.
     for v in snap.verdicts:
-        if v["pr"] != pr["iri"] or v["sha"] != head:
+        if v["number"] != pr["number"] or v["sha"] != head:
             continue
-        agent_author = author_agent or v["author"]
-        if agent_author is None:
+        if author_agent is None:
             unknown_author = True
-            reviewed.append(v)  # someone reviewed; who wrote the PR is unknown
+            reviewed.append(v)  # someone reviewed; who wrote the PR is unknown or ambiguous
             continue
-        if v["by"] == agent_author:
+        if v["by"] == author_agent:
             continue  # self-review never counts
         reviewed.append(v)
         if "verdict" in sources:
@@ -622,7 +668,8 @@ def approval(pr: dict, snap: Snapshot, gh_reviews: list[dict], sources: tuple[st
             "approved_at": max((w["ts"] for w in approvals), default=None) if approved else None,
             "approvals": [{"by": w["by"], "source": w["source"], "at": w["at"], "record": w["v"]} for w in approvals],
             "blocking": [{"by": w["by"], "source": w["source"], "at": w["at"], "record": w["v"]} for w in blocking],
-            "author_agent": author_agent, "author_agent_unknown": unknown_author and not approvals}
+            "author_agent": author_agent, "author_agent_unknown": unknown_author,
+            "author_agent_ambiguous": declared is AMBIGUOUS}
 
 
 def _pr_facts(repo: str, pr: dict, ci: dict, appr: dict | None = None) -> dict:
@@ -856,8 +903,11 @@ class FixtureFacts:
     def __init__(self, episodes: list[dict], verdicts: list[dict] | None = None,
                  authors: dict[str, str] | None = None):
         self.rows = rows_from_episodes(episodes)
-        self.verdicts = [v for v in (normalize_verdict(r) for r in (verdicts or [])) if v]
-        self.authors = {k: v.lower() for k, v in (authors or {}).items()}
+        # Fixture verdicts state `trusted` (the result /verdict/verify would give).
+        self.raw_verdicts = list(verdicts or [])
+        self.authors = {k: (AMBIGUOUS if isinstance(v, (list, tuple)) and len(set(v)) > 1
+                            else (v[0] if isinstance(v, (list, tuple)) else v).lower())
+                        for k, v in (authors or {}).items()}
         self.repo_iris = {}
         for body in episodes:
             for n in body["nodes"]:
@@ -872,7 +922,8 @@ class FixtureFacts:
     def snapshot(self, repo: str, now: float) -> Snapshot:
         iris = {i for i, n in self.repo_iris.items() if n == repo}
         mine = [r for r in self.rows if self.activity_repo.get(r["a"]) in (repo,) or r["e"] in iris]
-        return Snapshot(mine, list(self.verdicts), dict(self.authors))
+        verdicts = [v for v in (normalize_verdict(r, repo) for r in self.raw_verdicts) if v]
+        return Snapshot(mine, verdicts, dict(self.authors))
 
     def repos_of(self, iris: set[str]) -> set[str]:
         out = set()
@@ -898,7 +949,7 @@ def main(argv: list[str] | None = None) -> int:
         doc = json.loads(args.fixture.read_text())
         facts = FixtureFacts([e["episode"] for e in doc.get("episodes", [])], doc.get("verdicts"), doc.get("authors"))
     elif args.quipu:
-        facts = QuipuFacts(args.quipu, cfg.graph, cfg.window_days)
+        facts = QuipuFacts(args.quipu, cfg.graph, cfg.window_days, predicate=cfg.review_predicate)
     else:
         ap.error("--quipu or --fixture is required")
     adapter = Adapter(cfg, facts)

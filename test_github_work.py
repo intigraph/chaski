@@ -87,7 +87,7 @@ def test_tampered_request_is_refused(env):
 def test_merge_takes_the_lane_and_a_second_merge_waits(env):
     cfg, ledger, items, spawner, tmp = env
     iri178, head178, extra = second_pr()
-    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:55:30Z")]
+    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, number=178, at="2026-10-27T18:55:30Z")]
     authors = {PR177: "lex", iri178: "lex"}
     now = ts("2026-10-27T18:56:00Z")
     ev177 = events_for(cfg, [ep(n) for n in BASE] + extra, now, verdicts, authors)["merge"]
@@ -123,7 +123,7 @@ def test_receiver_enforces_spacing_even_if_the_request_is_early(env):
     cfg, ledger, items, spawner, _ = env
     iri178, head178, extra = second_pr()
     at_merge = ts("2026-10-27T18:56:18Z")
-    v = [verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:56:00Z")]
+    v = [verdict("sattler", sha=head178, number=178, at="2026-10-27T18:56:00Z")]
     ev = events_for(cfg, extra + [ep("pull_request.closed")], at_merge + 601, v, {iri178: "lex"})["merge"]
     code, msg = gw.deliver(ev, cfg, ledger, items, spawner, at_merge + 300)  # delivered "early"
     assert code == gw.EX_TEMPFAIL and "spacing" in msg
@@ -252,3 +252,56 @@ def test_end_to_end_emitter_command_sink_receiver(tmp_path):
     assert len(lines(tmp_path / "spawns.jsonl")) == 1
     assert len(lines(tmp_path / "items.jsonl")) == 1
     assert lines(tmp_path / "spawns.jsonl")[0]["argv"][5] == "merge"
+
+
+def test_merge_handoff_pins_the_exact_head(env):
+    cfg, ledger, items, spawner, tmp = env
+    ev = events_for(cfg, [ep(n) for n in BASE], ts(GREEN_AT) + 600, [verdict("sattler")], {PR177: "lex"})["merge"]
+    assert gw.deliver(ev, cfg, ledger, items, spawner, ts(GREEN_AT) + 600)[0] == 0
+    argv = lines(tmp / "spawns.jsonl")[0]["argv"]
+    assert argv[argv.index("--head") + 1] == HEAD and argv[argv.index("--job") + 1] == "merge"
+    review = events_for(cfg, [ep(n) for n in BASE], ts(GREEN_AT) + 3600)["review"]
+    gw.deliver(review, cfg, ledger, items, spawner, ts(GREEN_AT) + 3600)
+    assert "--head" not in lines(tmp / "spawns.jsonl")[1]["argv"]
+
+
+def test_a_live_claim_from_another_delivery_defers_and_a_stale_one_lapses(env):
+    cfg, ledger, items, spawner, tmp = env
+    ev = events_for(cfg, [ep(n) for n in BASE], ts(GREEN_AT) + 3600)["review"]
+    other = gw.Ledger(cfg.ledger)  # a second process on the same ledger
+    now = ts(GREEN_AT) + 3600
+    other.claim(gw.parse_request(ev, cfg), now)
+    code, msg = gw.deliver(ev, cfg, ledger, items, spawner, now + 1)
+    assert code == gw.EX_TEMPFAIL and "another process" in msg
+    assert lines(tmp / "items.jsonl") == []
+    assert gw.deliver(ev, cfg, ledger, items, spawner, now + gw.CLAIM_TTL_S + 1)[0] == 0
+    assert len(lines(tmp / "items.jsonl")) == 1
+    other.close()
+
+
+def test_concurrent_deliveries_of_one_request_file_one_item(env):
+    import threading
+    import time as _time
+    cfg, _, _, spawner, tmp = env
+    ev = events_for(cfg, [ep(n) for n in BASE], ts(GREEN_AT) + 3600)["review"]
+
+    class SlowItems(gw.JsonlItems):
+        def create(self, req):
+            _time.sleep(0.3)  # widen the find-then-create window
+            return super().create(req)
+    items = SlowItems({"path": str(tmp / "items.jsonl")}, "hammond")
+    codes = []
+
+    def run():
+        ledger = gw.Ledger(cfg.ledger)
+        try:
+            codes.append(gw.deliver(ev, cfg, ledger, items, spawner, ts(GREEN_AT) + 3600)[0])
+        finally:
+            ledger.close()
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(lines(tmp / "items.jsonl")) == 1 and len(lines(tmp / "spawns.jsonl")) == 1
+    assert sorted(codes)[0] == 0 and set(codes) <= {0, gw.EX_TEMPFAIL}

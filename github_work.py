@@ -36,13 +36,15 @@ import github_routes as gr
 EX_TEMPFAIL = 75
 JOB_FOR_KIND = {"review": "review", "merge": "merge", "triage": "triage", "install": "task", "announce": "task"}
 TERMINAL = {"dispatched", "routed", "spent"}
+CLAIM_TTL_S = 1200  # above the command sink's 900 s timeout: a crashed delivery's claim lapses
 OUTCOMES = {"merged", "blocked", "failed", "closed", "stopped"}
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
   request_id TEXT PRIMARY KEY, item TEXT NOT NULL, kind TEXT NOT NULL, repo TEXT NOT NULL,
   subject TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL, work_item TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL, detail TEXT);
+  attempts INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL, detail TEXT,
+  claimed_until REAL);
 CREATE TABLE IF NOT EXISTS lane (
   request_id TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL,
   acquired_at REAL NOT NULL, lease_until REAL NOT NULL, released_at REAL, outcome TEXT);
@@ -56,6 +58,10 @@ class RequestError(ValueError):
 
 class LaneBusy(RuntimeError):
     pass
+
+
+class Claimed(RuntimeError):
+    """Another delivery of the same request is in progress."""
 
 
 class LaneSpent(RuntimeError):
@@ -122,6 +128,8 @@ class Ledger:
             os.chmod(path, 0o600)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(LEDGER_SCHEMA)
+        if "claimed_until" not in {r[1] for r in self.conn.execute("PRAGMA table_info(requests)")}:
+            self.conn.execute("ALTER TABLE requests ADD COLUMN claimed_until REAL")
 
     def close(self):
         self.conn.close()
@@ -142,6 +150,37 @@ class Ledger:
             "attempts=requests.attempts+?, updated=excluded.updated, detail=excluded.detail",
             (req["request_id"], req["item"], req["kind"], req["repo"], req["subject"], req["revision"], state,
              work_item, 1 if attempt else 0, now, now, detail, 1 if attempt else 0))
+
+    def claim(self, req: dict, now: float, ttl: float = CLAIM_TTL_S) -> dict | None:
+        """Claim the request atomically before any tracker or spawn call.
+
+        chaski's runner delivers one event at a time (one consumer lease, one
+        tick thread), so this is defence in depth: two concurrent deliveries of
+        one request cannot both file an item or both spawn. Returns the
+        existing row; raises Claimed while another live claim holds it, and
+        LaneSpent-style terminal rows are returned for the caller to ack."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.get(req["request_id"])
+            held = self.conn.execute("SELECT claimed_until FROM requests WHERE request_id=?",
+                                     (req["request_id"],)).fetchone()
+            if row and row["state"] in TERMINAL:
+                self.conn.execute("COMMIT")
+                return row
+            if held and held[0] is not None and held[0] > now:
+                raise Claimed(f"request {req['request_id'][:12]} is being delivered by another process")
+            self.upsert(req, (row or {}).get("state") or "claimed", now)
+            self.conn.execute("UPDATE requests SET claimed_until=? WHERE request_id=?",
+                              (now + ttl, req["request_id"]))
+            self.conn.execute("COMMIT")
+            return row
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+
+    def unclaim(self, rid: str) -> None:
+        self.conn.execute("UPDATE requests SET claimed_until=NULL WHERE request_id=?", (rid,))
 
     # ---- merge lane
 
@@ -298,6 +337,10 @@ def spawn_argv(prefix: list[str], req: dict, work_item: str) -> list[str]:
     pr = pr_number(req)
     if pr is not None:
         argv += ["--pr", str(pr)]
+    if req["kind"] == "merge":
+        # The exact head the verdict and CI were checked on. st must merge
+        # only this sha (`gh pr merge --match-head-commit`) or refuse.
+        argv += ["--head", req["revision"]]
     return argv
 
 
@@ -360,9 +403,20 @@ def deliver(event: dict, cfg: gr.Config, ledger: Ledger, items, spawner, now: fl
     """(exit code, message). 0 = received (incl. duplicates), 75 = retry later."""
     req = parse_request(event, cfg)
     rid = req["request_id"]
-    row = ledger.get(rid)
+    try:
+        row = ledger.claim(req, now)
+    except Claimed as exc:
+        return EX_TEMPFAIL, str(exc)
     if row and row["state"] in TERMINAL:
         return 0, f"duplicate {rid[:12]}: already {row['state']} ({row['work_item']})"
+    try:
+        return _deliver_claimed(req, row, cfg, ledger, items, spawner, now)
+    finally:
+        ledger.unclaim(rid)
+
+
+def _deliver_claimed(req, row, cfg, ledger, items, spawner, now) -> tuple[int, str]:
+    rid = req["request_id"]
     holds_lane = False
     if req["kind"] == "merge" and req["route"] == "spawn":
         try:

@@ -39,47 +39,66 @@ Anything the facts do not show is WAIT, never READY. A Quipu read that fails
 or comes back truncated makes the whole adapter call fail, so chaski records
 UNKNOWN and keeps every previous verdict.
 
-## Approval: agent verdicts, not GitHub reviews
+## Approval: signed agent verdicts, not GitHub reviews
 
 Every PR and every review comes from one shared GitHub account. A GitHub
 "APPROVE" by a non-author therefore never exists, and the login cannot tell
-the author from the reviewer. The merge rule keys on **verdict records**
-instead (`approval_sources: [verdict]`, the default).
+the author from the reviewer. The merge rule keys on **quipu signed
+verdicts** instead (`approval_sources: [verdict]`, the default).
 
-A verdict record is a node in Quipu, in any graph, typed
-`aegis:GateApproval`. During quipu's Decision-to-GateApproval migration
-(camayoc `docs/design/agent-memory-entities.md` 1.3), `aegis:Decision` is
-read too. Its fields:
+A review verdict is a stored `aegis:Verdict` in any graph, with these fields:
 
 | predicate | value |
 |---|---|
-| `aegis:aboutGitHubEntity` | the PR node, `aegis:github.<PR node_id>` (`gh pr view N --json id`) |
-| `aegis:commitSha` | the exact head the reviewer read (40 hex) |
-| `aegis:outcome` | `approve`, or `changes` / `reject` |
-| `aegis:by` | the reviewing agent (IRI or name) |
-| `aegis:recordedAt` | RFC 3339 |
-| `aegis:authorAgent` | optional: the PR's author agent, as the reviewer job's item states it |
+| `aegis:predicateId` | `review_predicate` (default `chaski:github:pr-review/v1`) |
+| `aegis:targetRef` | `github:pr:<owner/name>#<n>@<head sha>`, which binds the repo, the PR and the exact head |
+| `aegis:outcome` | `satisfied` = approve, `unsatisfied` = changes; `unknown` counts for nothing |
+| `aegis:evidenceHash`, `aegis:tier` | the evidence the reviewer read |
+| `aegis:verifier` | the reviewing agent's verifier IRI. Its local name is the agent |
+| `aegis:signature` | the signature over the fields above, from a key registered to that verifier for `review_predicate` |
 
-The PR's author agent is the fact `?pr aegis:authoredByAgent ?agent` when one
-exists. Otherwise it is the verdict's `authorAgent`. A PR with two declared
-author agents has none. Then:
+**Only trusted verdicts count.** Each candidate verdict on a PR's current
+head goes through quipu's `POST /verdict/verify`, passing `verdict: <IRI>`.
+That request verifies the record as of the instant the store recorded its
+signature, against the verifier registry. The adapter accepts a record only
+when the answer is `trusted: true` with `as_of.basis: recorded`.
 
-- A verdict by the author agent never counts.
-- For each other agent, its latest verdict on the head counts. An approval
-  with no later `changes` verdict from anyone approves.
-- A verdict on another head counts for nothing. A new push is a new head, so
-  the old approval falls away by itself.
-- If the author agent is unknown, the PR counts as reviewed (no second review
-  job) but is never approved. Fail closed.
+Each of these counts as no verdict at all, not even as a review:
+- a record with no signature;
+- a record whose signature does not verify, or whose key or registration
+  does not authorize the predicate;
+- a record quipu refuses.
+
+The graph a record sits in is never trusted, because any writer can type
+fields, but no writer can forge a registered signature. The ordering
+timestamp is verify's `as_of.at`, which the signer cannot choose.
+
+**The author agent is only the declared fact** `?pr aegis:authoredByAgent
+?agent`. A verdict never states who the author is. That field would not be
+covered by the signature, and a reviewer must not pick its own counterparty.
+Then:
+
+- If no author agent is declared, or the PR has two of them (ambiguous), the
+  PR counts as reviewed, so no second review job is filed, but it is never
+  approved. There is no fallback. Fail closed.
+- A verdict whose verifier is the author agent never counts.
+- For each other verifier, its latest verdict on the head counts. An approval
+  with no later `unsatisfied` verdict from anyone approves.
+- A verdict on another head is not even verified. A new push is a new head,
+  so the old approval falls away by itself.
 
 `github_review` can be added to `approval_sources` for repositories where
 reviewers have their own GitHub logins. Then a GitHub APPROVE by a login
 other than the PR author's counts the same way.
 
-**Writers needed (not in this change).** The review job must record its
-verdict as above. Tonight's reviewers post a PR comment headed "APPROVE" or
-"REQUEST CHANGES". The adapter never parses comments: they are unsigned and
-unattributable. The st side is listed under [Handoff contract](#handoff-contract).
+**Writers needed (not in this change).**
+- The review job must record its verdict as a signed `aegis:Verdict` as
+  above, with a verifier registration for `review_predicate`.
+- Whoever opens a crew PR must record `aegis:authoredByAgent`.
+
+Until both exist, the merge rule never fires. Tonight's reviewers post a PR
+comment headed "APPROVE" or "REQUEST CHANGES". The adapter never parses
+comments: they are unsigned and unattributable.
 
 ## Idempotency
 
@@ -173,8 +192,11 @@ URL.
 **Spawn.** The receiver runs exactly the flags shantytown #406 defines:
 
 ```sh
-SHANTY_AGENT=<administrator> st agent spawn --ephemeral --job <review|merge|triage|task> --item <seed id> --repo <owner/name> [--pr <n>]
+SHANTY_AGENT=<administrator> st agent spawn --ephemeral --job <review|merge|triage|task> --item <seed id> --repo <owner/name> [--pr <n>] [--head <sha>]
 ```
+
+`--head` is passed on every merge job. It is the exact sha the verdict and CI
+were checked on.
 
 | exit code | meaning here |
 |---|---|
@@ -188,26 +210,37 @@ exit 75, so chaski retries. `install` and `announce` run as `task` jobs.
 Until #406 merges, `spawner: {kind: stub}` records the exact argv in a JSONL
 file and starts nothing. `spawner: {kind: st}` is the real call.
 
-**What the st side must do (follow-ups for shantytown #406):**
+**What the st side must do (shantytown #406 follow-ups; hard requirements before `spawner.kind: st`):**
 
-1. **Guarded merge accepts the verdict source.** `st agent spawn --merge
+1. **`spawn --ephemeral --job merge` takes `--head <sha>` and pins it.** The
+   merge job may merge only that sha (`gh pr merge --match-head-commit`). If
+   the PR's head moved, it refuses and reports `blocked`. Nothing on the
+   chaski side re-checks after the handoff.
+2. **The guarded merge accepts the verdict source.** `st agent spawn --merge
    --head SHA` counts GitHub APPROVE reviews by login today, and with one
-   shared account that can never pass. It must accept a verdict record as
-   defined above:
-   - it is on exactly `--head`;
-   - its `by` is not the PR's author agent;
-   - no later `changes` verdict exists on that head.
+   shared account that can never pass. It must instead require a verdict that
+   `/verdict/verify` calls trusted:
+   - its target is `github:pr:<repo>#<n>@<SHA>`;
+   - its verifier is not the PR's declared author agent;
+   - no later trusted `unsatisfied` verdict exists on that head.
 
-   It reads the record from Quipu: the same `verdict_query` shape as
-   `github_routes.py`.
-2. **The review job writes that verdict record** (GateApproval fields above)
-   as well as its PR comment, naming the PR's author agent when the item or
-   the PR's authorship fact gives it.
-3. **The merge job uses `revision` from the item as `--head`.** On ending
-   without a merge, its report calls `lane release` (or leaves it to the
-   lease).
-4. **Whoever opens a crew PR records `aegis:authoredByAgent`** for it. Until
-   then, the author agent comes only from verdicts.
+   This is the same check `github_routes.py` makes (`verdict_query` plus
+   `QuipuFacts.verify`).
+3. **The review job writes that signed verdict**, as well as its PR comment.
+4. **Crew PRs get an `aegis:authoredByAgent` fact** when they are opened.
+5. **A merge job that ends without merging calls `lane release`**, or leaves
+   the turn to the lease.
+
+## Concurrency
+
+Chaski delivers serially: one consumer lease per state directory, and one
+tick thread that runs each emitter's deliveries in order. The receiver does
+not rely on that. Before any tracker or spawn call, `deliver` claims the
+request in a `BEGIN IMMEDIATE` transaction (`claimed_until`, 20 minutes,
+which is longer than the sink's 900 s timeout). A second delivery of the same
+request while the claim is live exits 75 and is retried. A crashed
+delivery's claim lapses. Four concurrent deliveries file one item and start
+one job (`test_concurrent_deliveries_of_one_request_file_one_item`).
 
 ## Enabling
 
@@ -215,8 +248,8 @@ Not done here; each step is a separate, reviewed change.
 
 1. camayoc ingress running and its Quipu schema proposal accepted
    (aegis-c01c.6), so `GitHubActivity` facts exist.
-2. A verdict writer (above) for the review job, and shantytown #406 merged
-   with the verdict-source change.
+2. The signed verdict writer and verifier registration for the review job, the
+   `authoredByAgent` writer, and shantytown #406 merged with the follow-ups above.
 3. Copy `github-routing.example.yaml`. Set `members`, `repos`, `ledger`,
    `work_items` and the `spawner` (`stub` first).
 4. Add the emitter to chaski's emitters file:
@@ -262,7 +295,8 @@ chaski-github-routes --config github-routing.example.yaml --fixture facts.json -
 echo '{"now": 1793124689, "discover": true}' | chaski-github-routes --config github-routing.example.yaml --fixture facts.json --changes
 ```
 
-`facts.json` is `{"episodes": [{"episode": <camayoc /episode body>}], "verdicts": [...], "authors": {...}}`;
+`facts.json` is `{"episodes": [{"episode": <camayoc /episode body>}], "verdicts": [...], "authors": {...}}`.
+Fixture verdicts carry `trusted` and `at`, the answer `/verdict/verify` would give;
 see `fixtures/github/` and the tests.
 
 ## Operating

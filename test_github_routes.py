@@ -62,9 +62,12 @@ def variant(name, tag, props=None, subject=None, subject_props=None):
     return body
 
 
-def verdict(by, outcome="approve", sha=HEAD, at="2026-10-27T18:55:00Z", pr=PR177, author=None, v=None):
-    return {"v": v or f"urn:verdict:{by}:{outcome}:{at}", "pr": pr, "sha": sha, "outcome": outcome, "by": by,
-            "at": at, "author": author}
+def verdict(by, outcome="approve", sha=HEAD, at="2026-10-27T18:55:00Z", number=177, trusted=True, v=None):
+    """A stored signed review verdict as the fixture source sees it after
+    /verdict/verify: `trusted` and `at` (the recorded instant) come from quipu."""
+    return {"v": v or f"urn:verdict:{by}:{outcome}:{at}", "target": gr.review_target(REPO, number, sha),
+            "outcome": {"approve": "satisfied", "changes": "unsatisfied"}[outcome],
+            "verifier": gr.AEGIS + "verifier/" + by, "at": at, "trusted": trusted}
 
 
 def config(**repo):
@@ -153,10 +156,14 @@ def test_approve_and_green_on_the_same_head_requests_a_merge():
     assert approval["approvals"][0]["by"] == "sattler" and approval["author_agent"] == "lex"
 
 
-def test_author_agent_from_the_verdict_when_no_authorship_fact():
-    d = decide([ep(n) for n in BASE], ts(GREEN_AT) + 600, [verdict("sattler", author="lex")])
-    assert d[gr.item_key("merge", REPO, "pr/177", HEAD)].verdict == gr.READY
-    d = decide([ep(n) for n in BASE], ts(GREEN_AT) + 600, [verdict("lex", author="lex")])
+def test_untrusted_verdicts_count_as_nothing():
+    d = decide([ep(n) for n in BASE], ts(GREEN_AT) + 3600, [verdict("sattler", trusted=False)], {PR177: "lex"})
+    assert not only(d, "merge")
+    assert only(d, "review")  # not even a review: an unverified record is no verdict at all
+
+
+def test_ambiguous_author_agents_never_merge_and_nothing_falls_back():
+    d = decide([ep(n) for n in BASE], ts(GREEN_AT) + 600, [verdict("malcolm")], {PR177: ["hammond", "malcolm"]})
     assert not only(d, "merge")
 
 
@@ -219,7 +226,7 @@ def lane_row(rid, pr, head, acquired, lease=4500, released=None, outcome=None):
 def test_one_lane_head_of_line_by_approval_time():
     iri178, head178, extra = second_pr()
     verdicts = [verdict("sattler", at="2026-10-27T18:55:00Z"),
-                verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:54:00Z")]
+                verdict("sattler", sha=head178, number=178, at="2026-10-27T18:54:00Z")]
     d = decide([ep(n) for n in BASE] + extra, ts(GREEN_AT) + 600, verdicts, {PR177: "lex", iri178: "lex"})
     m = only(d, "merge")
     assert m[gr.item_key("merge", REPO, "pr/178", head178)].verdict == gr.READY
@@ -228,7 +235,7 @@ def test_one_lane_head_of_line_by_approval_time():
 
 def test_lane_in_flight_then_merged_fact_then_spacing():
     iri178, head178, extra = second_pr()
-    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:56:00Z")]
+    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, number=178, at="2026-10-27T18:56:00Z")]
     authors = {PR177: "lex", iri178: "lex"}
     rid177 = gr.request_id(gr.item_key("merge", REPO, "pr/177", HEAD))
     now = ts("2026-10-27T18:56:10Z")
@@ -253,7 +260,7 @@ def test_lane_in_flight_then_merged_fact_then_spacing():
 def test_spacing_counts_hand_merges_and_quipu_spacing_is_configurable():
     iri178, head178, extra = second_pr()
     merged = ep("pull_request.closed")  # PR 177 merged by hand, no lane row
-    v = [verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:56:00Z")]
+    v = [verdict("sattler", sha=head178, number=178, at="2026-10-27T18:56:00Z")]
     at_merge = ts("2026-10-27T18:56:18Z")
     item = gr.item_key("merge", REPO, "pr/178", head178)
     assert decide(extra + [merged], at_merge + 300, v, {iri178: "lex"})[item].verdict == gr.WAIT
@@ -263,7 +270,7 @@ def test_spacing_counts_hand_merges_and_quipu_spacing_is_configurable():
 
 def test_a_failed_merge_turn_does_not_block_the_lane_or_repeat():
     iri178, head178, extra = second_pr()
-    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, pr=iri178, at="2026-10-27T18:56:00Z")]
+    verdicts = [verdict("sattler"), verdict("sattler", sha=head178, number=178, at="2026-10-27T18:56:00Z")]
     rid177 = gr.request_id(gr.item_key("merge", REPO, "pr/177", HEAD))
     now = ts("2026-10-27T19:30:00Z")
     blocked = [lane_row(rid177, 177, HEAD, now - 900, released=now - 300, outcome="blocked")]
@@ -399,7 +406,8 @@ def test_queries_are_bounded_to_the_one_graph_and_validated():
     assert "GRAPH <https://camayoc.local/operational/github>" in q and '"intigraph/camayoc"' in q
     with pytest.raises(ValueError):
         gr.activity_query("https://camayoc.local/operational/github", 'x/y" } DROP', "2026")
-    assert "aegis:GateApproval, aegis:Decision" in gr.verdict_query("https://g.example/github", REPO)
+    vq = gr.verdict_query(REPO)
+    assert "a aegis:Verdict" in vq and "aegis:signature ?sig" in vq and '"github:pr:intigraph/camayoc#"' in vq
 
 
 def test_config_refuses_unknown_fields_and_needs_members():
@@ -425,3 +433,95 @@ def test_documented_emitter_definition_loads(tmp_path):
     [(e, sink)] = chaski.load_emitters(path)
     assert e.change_driven and e.from_verdict == gr.WAIT and e.to_verdict == gr.READY and e.baseline_emits
     assert set(sink) == {"graph", "command"}
+
+
+# ---------------------------------------------------------------- the real quipu read path (HTTP)
+
+class FakeQuipu:
+    """A local HTTP quipu answering /query by query shape and /verdict/verify
+    from a trust table: QuipuFacts runs unmodified against it."""
+
+    def __init__(self, activity_rows, verdict_rows, author_rows, trusted):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        fake = self
+        self.verify_calls = []
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/verdict/verify":
+                    fake.verify_calls.append(body)
+                    ok = trusted.get(body["verdict"], False)
+                    out = {"trusted": ok, "signature_valid": ok,
+                           "as_of": {"tx": 7, "at": "2026-10-27T18:55:00Z", "basis": "recorded"}}
+                else:
+                    q = body["query"]
+                    rows = (author_rows if "authoredByAgent" in q else verdict_rows if "aegis:Verdict" in q
+                            else activity_rows)
+                    out = {"rows": rows}
+                data = json.dumps(out).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_):
+                pass
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+
+
+def stored_verdict(name, by, outcome="satisfied", sha=HEAD, sig="ab" * 32, **extra):
+    return {"v": f"{gr.AEGIS}verdict.{name}", "target": gr.review_target(REPO, 177, sha), "outcome": outcome,
+            "hash": "sha256:" + "0" * 64, "tier": "committed", "verifier": f"{gr.AEGIS}verifier/{by}",
+            "sig": sig, **extra}
+
+
+def quipu_decide(verdict_rows, author_rows, trusted):
+    activity = [{k: v for k, v in r.items() if k != "ts"}
+                for r in gr.rows_from_episodes([ep(n) for n in BASE])]
+    fake = FakeQuipu(activity, verdict_rows, author_rows, trusted)
+    try:
+        cfg = config()
+        facts = gr.QuipuFacts(fake.url, cfg.graph, 30)
+        now = ts(GREEN_AT) + 600
+        snap = facts.snapshot(REPO, now)
+        return gr.evaluate_repo(cfg, cfg.repos[REPO], snap, [], now), snap, fake
+    finally:
+        fake.close()
+
+
+def test_quipu_path_ambiguous_author_is_unknown_even_when_the_verdict_names_another():
+    # Review repro: authors {hammond, malcolm}; malcolm's (trusted) verdict claims author sattler.
+    v = stored_verdict("m1", "malcolm", authorAgent=gr.AEGIS + "agent/sattler")
+    authors = [{"pr": PR177, "agent": gr.AEGIS + "agent/hammond"}, {"pr": PR177, "agent": gr.AEGIS + "agent/malcolm"}]
+    d, snap, _ = quipu_decide([v], authors, {v["v"]: True})
+    assert snap.authors[PR177] is gr.AMBIGUOUS
+    assert not only(d, "merge")
+    assert not only(d, "review")  # reviewed, by someone; never approved
+
+
+def test_quipu_path_only_trusted_signed_verdicts_count():
+    authors = [{"pr": PR177, "agent": gr.AEGIS + "agent/lex"}]
+    good = stored_verdict("ok", "malcolm")
+    d, _, fake = quipu_decide([good], authors, {good["v"]: True})
+    item = gr.item_key("merge", REPO, "pr/177", HEAD)
+    assert d[item].verdict == gr.READY
+    assert fake.verify_calls[0]["verdict"] == good["v"] and fake.verify_calls[0]["predicate_id"] == gr.REVIEW_PREDICATE
+    forged = stored_verdict("forged", "malcolm")
+    d, _, _ = quipu_decide([forged], authors, {})  # signature does not verify against the registry
+    assert item not in d
+    unsigned = stored_verdict("unsigned", "malcolm", sig="")
+    d, _, fake = quipu_decide([unsigned], authors, {unsigned["v"]: True})
+    assert item not in d and fake.verify_calls == []
+    stale = stored_verdict("stale", "malcolm", sha="4" * 40)
+    d, _, fake = quipu_decide([stale], authors, {stale["v"]: True})
+    assert item not in d and fake.verify_calls == []  # a verdict on another head is never even verified
+    self_review = stored_verdict("self", "lex")
+    d, _, _ = quipu_decide([self_review], authors, {self_review["v"]: True})
+    assert item not in d
