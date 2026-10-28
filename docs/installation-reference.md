@@ -286,3 +286,15 @@ This library does not schedule jobs, authenticate senders, admit executable
 manifests, sign transitions, or export runs. Those remain the integrating
 receiver's responsibilities. A stored outcome is not signed workflow acceptance.
 No runtime configuration enables this library automatically.
+
+## Agent orientation
+
+Use [Chaski prime](agent-primer.md) for read-only orientation, explicit definition
+counts and reported cursor state. `chaski prime --static` skips all live reads.
+No state path is discovered implicitly. Prime does not bootstrap a stream, take
+custody, open inbox SQLite or contact a graph. An optional metrics URL makes one
+bounded GET and does not establish stream freshness or delivery acceptance.
+
+Maintainers edit `primer.md`, then run `python3 scripts/sync-primer.py`. Normal
+pytest CI rejects stale installed-module, docs or skill copies; wheel smoke
+checks exercise the installed prime outside the checkout.

@@ -518,10 +518,20 @@ def make_sink(e: emitter.Emitter, sink: dict, quipu_url: str):
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "prime":
+        # Orientation must not write a source-tree bytecode cache or enter custody.
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            from chaski_prime import main as prime_main
+            return prime_main(argv[1:])
+        finally:
+            sys.dont_write_bytecode = previous
     if argv and argv[0] == "demo":
         from demo import main as demo_main
         return demo_main(argv[1:])
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 epilog="For read-only agent orientation, run: chaski prime")
     try:
         installed_version = metadata.version("chaski-reactor")
     except metadata.PackageNotFoundError:
