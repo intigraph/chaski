@@ -1,4 +1,5 @@
 include primer.md docs/agent-primer.md skills/chaski/SKILL.md
-include rules.example.yaml ruff.toml uv.lock
+include rules.example.yaml github-routing.example.yaml ruff.toml uv.lock
 include test_*.py
 recursive-include scripts *.py
+recursive-include fixtures *.json *.md
