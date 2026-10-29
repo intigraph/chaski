@@ -5,6 +5,12 @@
 Reactions and notifications when your knowledge graph changes. Chaski keeps
 notification delivery separate from the facts that triggered it.
 
+## Why you would want it
+
+- **React to graph changes:** evaluate rules when relevant facts change.
+- **Handle time-based conditions:** schedule checks for deadlines and expiry.
+- **Preserve uncertainty:** a timed-out query does not resolve a firing condition.
+
 ## Install
 
 ```sh
@@ -18,14 +24,7 @@ Set `STACK_INSTALL_ROOT` on the receiving shell for another prefix.
 Pinned releases, alternatives, configuration and removal are in the
 [installation and usage reference](docs/installation-reference.md).
 
-## Agent orientation
-
-Run `chaski prime` (`--brief`, `--json`, `--static`, or `--section core`) before
-receiver setup. See the [primer](docs/agent-primer.md) and
-[skill](skills/chaski/SKILL.md). Prime reads only explicit sources and starts no
-receiver, adapter or delivery.
-
-## Try it
+## First success in three commands
 
 ![Animated terminal: Chaski preserves a firing state through UNKNOWN, then resolves it](docs/demos/terminal/demo.svg)
 
@@ -42,7 +41,41 @@ chaski --help
 Then choose an explicit source and sink in the [configuration guide](docs/installation-reference.md).
 Installation alone starts no receiver or scheduled job.
 
-## Next steps
+![Conceptual mechanism: Unknown preserves the last known verdict](docs/demos/mechanism.svg)
+
+## On your own data
+
+Choose a rule, source and notification sink in the
+[configuration guide](docs/installation-reference.md). Rules select the nodes
+currently firing; a conclusive result can resolve them, while UNKNOWN retains
+the prior verdict. Use the [offline demo](docs/demos/terminal.md) to observe that
+lifecycle before configuring a receiver. Adapter setup and actual event coverage
+must be verified separately.
+
+## Wire it into your agent
+
+Run `chaski prime` (`--brief`, `--json`, `--static`, or `--section core`) before
+receiver setup. See the [primer](docs/agent-primer.md) and
+[skill](skills/chaski/SKILL.md). Prime reads only explicit sources and starts no
+receiver, adapter or delivery. Give the agent the explicit source and sink
+configuration rather than assuming installation activated them.
+
+## Before you start
+
+The installer needs Python 3.11+ with venv/pip, curl and Linux or macOS.
+A live receiver needs a configured source, rule inventory and sink. Review
+credentials and delivery behavior before starting it. The embedded demo uses
+synthetic offline query outcomes and sends no notifications.
+
+## What's next
+
+- [Documentation](docs/installation-reference.md): receiver and adapter setup.
+- [Agent primer](docs/agent-primer.md): bounded orientation.
+- [Offline demo](docs/demos/terminal.md): reproduce the lifecycle without a graph or sink.
+
+A published book root has not been verified; these links use checked-in source.
+
+### Related tools and repository knowledge
 
 - [Tambo](https://github.com/intigraph/tambo): guided stack installation and verification.
 - [Camayoc](https://github.com/scbrown/camayoc): governed memory and vocabulary.
@@ -50,7 +83,7 @@ Installation alone starts no receiver or scheduled job.
 
 **Load this repository’s graph:** public repository-pendant assets have not yet been verified. When a release supplies the archive, checksum and provenance, follow the [verified import workflow](https://scbrown.github.io/quipu/sharing/index.html): extract the share directory and use `quipu import SHARE_DIR --db repository.db`. Import stages knowledge; ROOT stays unchanged.
 
-## The stack
+## 🧺 The stack
 
 <!-- stack-table:start -->
 
@@ -75,5 +108,12 @@ when.
 | [shuttle](https://github.com/scbrown/shuttle) | runs signed agent workflows and keeps their records in Quipu |
 
 <!-- stack-table:end -->
+
+
+## Contributing
+
+See the repository tests and documentation checks before submitting a change.
+
+## 📜 License
 
 [License](LICENSE).
