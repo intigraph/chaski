@@ -123,6 +123,16 @@ is visible as lag rather than silently dropping work. Latency includes queueing
 and adapter runtime; a large dependency fan-out can take multiple ticks.
 
 Adapter state uses additive SQLite tables in the existing emitter database.
+The first startup with the inbox frontier builds an additional index and
+backfills entity minima and pending counts from retained records in one
+transaction. Allow time and disk space for this migration on a large inbox;
+failure rolls it back without changing inbox records or the cursor. Later
+startups reuse the projection. SQLite triggers maintain it with normal inbox
+inserts and acknowledgements, including when rolling back to an older binary.
+Routing selects the two oldest entities by their minimum transaction and
+minimum sequence, then supplies all retained changes for those entities. The
+selection avoids scanning unrelated entities; a single large entity group can
+still produce a large adapter request.
 Rollback to a scheduled adapter preserves verdicts and delivered-event identities;
 keep that database, and restore the previous code and emitter configuration.
 
