@@ -1,0 +1,59 @@
+{
+  "title": "Chaski: UNKNOWN is not resolved",
+  "description": "Real offline Reactor with synthetic query outcomes; no graph connection or notification sink.",
+  "width": 1000,
+  "height": 620,
+  "font_size": 24,
+  "line_height": 32,
+  "inputs": [
+    "demo.py",
+    "chaski.py",
+    "deadline_heap.py",
+    "run-demo.py"
+  ],
+  "steps": [
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "status",
+        "--state",
+        "canary.json"
+      ],
+      "hold": 4,
+      "requires": [
+        "No offline canary runs."
+      ]
+    },
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "run",
+        "--state",
+        "canary.json",
+        "--focus",
+        "urn:demo:canary"
+      ],
+      "hold": 8,
+      "requires": [
+        "FIRING -> UNKNOWN (preserved) -> RESOLVED."
+      ],
+      "allow_stderr": true
+    },
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "status",
+        "--state",
+        "canary.json"
+      ],
+      "hold": 8,
+      "requires": [
+        "\"unknown_preserved\": true",
+        "\"transitions\": 2"
+      ]
+    }
+  ]
+}
