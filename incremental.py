@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS change_cursor (id INTEGER PRIMARY KEY CHECK(id=1), tx
 CREATE TABLE IF NOT EXISTS change_inbox (
  emitter TEXT NOT NULL, tx INTEGER NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
  PRIMARY KEY(emitter,tx,seq));
--- Route a bounded entity batch without sorting every queued JSON payload to disk.
--- The remaining top-two ordering uses the grouped index keys, not the full inbox.
+-- Look up all changes for selected entities. Batch selection uses the maintained
+-- frontier below; grouping this index on every tick would still scan the inbox.
 CREATE INDEX IF NOT EXISTS change_inbox_entity
  ON change_inbox(emitter,json_extract(payload,'$.entity'),tx,seq);
 CREATE TABLE IF NOT EXISTS adapter_deadlines (
@@ -38,6 +38,62 @@ CREATE TABLE IF NOT EXISTS adapter_subscription (
  emitter TEXT PRIMARY KEY, digest TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS adapter_deadlines_due ON adapter_deadlines(emitter,due);
 """
+
+
+INBOX_PROJECTION = """
+CREATE INDEX IF NOT EXISTS change_inbox_entity_seq
+ ON change_inbox(emitter,json_extract(payload,'$.entity'),seq);
+CREATE TABLE change_inbox_frontier (
+ emitter TEXT NOT NULL, entity TEXT NOT NULL, min_tx INTEGER NOT NULL, min_seq INTEGER NOT NULL,
+ PRIMARY KEY(emitter,entity));
+CREATE INDEX change_inbox_frontier_order ON change_inbox_frontier(emitter,min_tx,min_seq,entity);
+CREATE TABLE change_inbox_counts (emitter TEXT PRIMARY KEY, pending INTEGER NOT NULL);
+INSERT INTO change_inbox_frontier
+ SELECT emitter,json_extract(payload,'$.entity'),MIN(tx),MIN(seq) FROM change_inbox
+ WHERE json_extract(payload,'$.entity') IS NOT NULL GROUP BY emitter,json_extract(payload,'$.entity');
+INSERT INTO change_inbox_counts SELECT emitter,COUNT(*) FROM change_inbox GROUP BY emitter;
+CREATE TRIGGER change_inbox_projection_insert AFTER INSERT ON change_inbox BEGIN
+ INSERT INTO change_inbox_counts VALUES (NEW.emitter,1)
+ ON CONFLICT(emitter) DO UPDATE SET pending=pending+1;
+ INSERT INTO change_inbox_frontier
+ SELECT NEW.emitter,json_extract(NEW.payload,'$.entity'),NEW.tx,NEW.seq
+ WHERE json_extract(NEW.payload,'$.entity') IS NOT NULL
+ ON CONFLICT(emitter,entity) DO UPDATE SET
+ min_tx=MIN(min_tx,excluded.min_tx), min_seq=MIN(min_seq,excluded.min_seq);
+END;
+CREATE TRIGGER change_inbox_projection_delete AFTER DELETE ON change_inbox BEGIN
+ UPDATE change_inbox_counts SET pending=pending-1 WHERE emitter=OLD.emitter;
+ DELETE FROM change_inbox_frontier WHERE emitter=OLD.emitter AND entity=json_extract(OLD.payload,'$.entity');
+ INSERT INTO change_inbox_frontier
+ SELECT OLD.emitter,json_extract(OLD.payload,'$.entity'),
+ (SELECT MIN(tx) FROM change_inbox INDEXED BY change_inbox_entity
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity')),
+ (SELECT MIN(seq) FROM change_inbox INDEXED BY change_inbox_entity_seq
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity'))
+ WHERE EXISTS (SELECT 1 FROM change_inbox INDEXED BY change_inbox_entity
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity'));
+END;
+CREATE TABLE change_inbox_projection_version (version INTEGER PRIMARY KEY CHECK(version=1));
+INSERT INTO change_inbox_projection_version VALUES (1);
+"""
+
+
+def prepare_inbox_projection(conn):
+    """Backfill once without changing retained inbox rows or their cursor.
+
+    Index construction/backfill is an explicit startup migration cost. Thereafter
+    INSERT/DELETE triggers maintain the frontier and count in the writer's own
+    transaction, including when an older binary is used for rollback.
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='change_inbox_projection_version'").fetchone():
+        return
+    try:
+        conn.executescript("BEGIN IMMEDIATE;\n" + INBOX_PROJECTION + "\nCOMMIT;")
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def call(emitter, request=None):
@@ -62,6 +118,7 @@ class ChangeRunner(Runner):
     def __init__(self, emitter, conn, sink, budget=None):
         self.emitter = emitter
         conn.executescript(SCHEMA)
+        prepare_inbox_projection(conn)
         self.subscription = call(emitter)
         self.attributes = strings(self.subscription.get("attributes"))
         self.graphs = strings(self.subscription.get("graphs"))
@@ -127,10 +184,13 @@ class ChangeRunner(Runner):
 
     def route_pending(self, now):
         label = self.emitter.label
+        # Unary + removes the frontier TEXT affinity, matching json_extract's
+        # expression-index affinity; otherwise SQLite can scan every emitter row.
         pending = self.conn.execute(
-            "SELECT tx,seq,payload FROM change_inbox WHERE emitter=? AND json_extract(payload,'$.entity') IN "
-            "(SELECT json_extract(payload,'$.entity') FROM change_inbox WHERE emitter=? "
-            " GROUP BY json_extract(payload,'$.entity') ORDER BY MIN(tx),MIN(seq) LIMIT ?) ORDER BY tx,seq",
+            "SELECT tx,seq,payload FROM change_inbox INDEXED BY change_inbox_entity "
+            "WHERE emitter=? AND json_extract(payload,'$.entity') IN "
+            "(SELECT +entity FROM change_inbox_frontier WHERE emitter=? "
+            " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
         if not pending:
             return
@@ -214,14 +274,15 @@ class ChangeRunner(Runner):
                 obligations.append(due)
         return max(now + 0.01, min(obligations))
 
-    def _publish(self):
-        super()._publish()
-        pending = self.conn.execute("SELECT COUNT(*) FROM change_inbox WHERE emitter=?",
-                                    (self.emitter.label,)).fetchone()[0]
+    def _snapshot_values(self):
+        snap = super()._snapshot_values()
+        row = self.conn.execute("SELECT pending FROM change_inbox_counts WHERE emitter=?",
+                                (self.emitter.label,)).fetchone()
+        pending = row[0] if row else 0
         count, due = self.conn.execute("SELECT COUNT(*), MIN(due) FROM adapter_deadlines WHERE emitter=?",
                                       (self.emitter.label,)).fetchone()
-        with self._snap_lock:
-            self._snapshot.update(change_pending=pending, deadlines=count, next_due=due or 0)
+        snap.update(change_pending=pending, deadlines=count, next_due=due or 0)
+        return snap
 
     def metrics(self, esc):
         lines = super().metrics(esc)
