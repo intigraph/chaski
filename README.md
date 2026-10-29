@@ -41,6 +41,8 @@ chaski --help
 Then choose an explicit source and sink in the [configuration guide](docs/installation-reference.md).
 Installation alone starts no receiver or scheduled job.
 
+![Conceptual mechanism: Unknown preserves the last known verdict](docs/demos/mechanism.svg)
+
 ## On your own data
 
 Choose a rule, source and notification sink in the
