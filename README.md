@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/thread-workshop/chaski.png" width="704" alt="chaski: A winged envelope carries an event onward. Original pixel art in the Thread Workshop style."/></p>
+
 # Chaski
 
 Reactions and notifications when your knowledge graph changes. Chaski keeps
