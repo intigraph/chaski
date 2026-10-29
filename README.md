@@ -27,6 +27,12 @@ receiver, adapter or delivery.
 
 ## Try it
 
+![Animated terminal: Chaski preserves a firing state through UNKNOWN, then resolves it](docs/demos/terminal/demo.svg)
+
+The real reactor uses synthetic offline query outcomes; no graph or notification
+sink is connected. [Read the transcript](docs/demos/terminal/transcript.txt) or
+[reproduce the recording](docs/demos/terminal.md).
+
 Inspect the installed receiver's options:
 
 ```sh
