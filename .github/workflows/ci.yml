@@ -70,3 +70,20 @@ jobs:
           test "${#wheels[@]}" -eq 1
           uv run --no-project --isolated --python 3.11 --directory "$RUNNER_TEMP" --with "${wheels[0]}" \
             python "$GITHUB_WORKSPACE/scripts/smoke-installed.py"
+
+  repository-pendant-source:
+    name: Repository pendant source controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned RDF test parser
+        run: python3 -m pip install rdflib==7.6.0
+      - name: Test copied pointer and publication boundaries
+        run: |
+          python3 scripts/test-repository-share-query.py
+          python3 scripts/test-repository-knowledge.py
+          python3 scripts/test-repository-share-publication.py
