@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/intigraph/chaski/compare/v0.2.4...v0.3.0) (2026-10-29)
+
+
+### Features
+
+* **cli:** chaski prime per the stack prime contract (aegis-km3g.6) ([#48](https://github.com/intigraph/chaski/issues/48)) ([73b6482](https://github.com/intigraph/chaski/commit/73b648288857c17018fe5350dacdc5ecd3944da8))
+* **github:** routing rules from GitHub activity facts to work requests (aegis-c01c.4) ([#49](https://github.com/intigraph/chaski/issues/49)) ([83384e3](https://github.com/intigraph/chaski/commit/83384e33d74aedeb2d40ff45237a36326f273bc8))
+
+
+### Bug Fixes
+
+* **custody:** separate Darwin inode lease from SQLite file locks ([d75de60](https://github.com/intigraph/chaski/commit/d75de603e48b51350fbb1f1a87b535f1f2f6fc03))
+* **stream:** resume durable change custody without startup polling ([#46](https://github.com/intigraph/chaski/issues/46)) ([dedfb16](https://github.com/intigraph/chaski/commit/dedfb16d54d3edec9127d3e56bf181b147f9a28e))
+
+
+### Documentation
+
+* **demo:** show the reactor preserving UNKNOWN state ([#53](https://github.com/intigraph/chaski/issues/53)) ([b03af67](https://github.com/intigraph/chaski/commit/b03af676e9dc2fdebe8affbf44e1f50389d04a9e))
+* **readme:** embed the shared Thread Workshop hero ([#52](https://github.com/intigraph/chaski/issues/52)) ([aa2572b](https://github.com/intigraph/chaski/commit/aa2572bdb1aced5ad8c9dc8d742735ab80ef7575))
+* **readme:** follow the shared stack sections ([#54](https://github.com/intigraph/chaski/issues/54)) ([22eecf0](https://github.com/intigraph/chaski/commit/22eecf0ad8536aa8b34c372723e9ffaa0cac1dc4))
+
 ## [0.2.4](https://github.com/intigraph/chaski/compare/v0.2.3...v0.2.4) (2026-10-25)
 
 
