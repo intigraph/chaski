@@ -373,6 +373,56 @@ class SinkRecovery(unittest.TestCase):
                 sink.prepare_recovery(EVENT)
             self.assertEqual(sink.writes, [])
 
+    def test_graph_compact_prefixes_name_the_same_firing(self):
+        # Quipu has answered the aegis namespace as a full IRI, as "aegis:" and
+        # now as "a:" (the live form). All three are the same predicate.
+        for prefix in (NS, "aegis:", "a:"):
+            with self.subTest(prefix=prefix):
+                sink = FakeGraph()
+                sink.rows = [{"p": prefix + "eventId", "e": PRIOR["event_id"]}]
+                receipt = sink.prepare_recovery(EVENT)
+                self.assertEqual(receipt["predicate"], NS + "resolvedAt")
+                sink.resolve({**EVENT, "receipt": receipt})
+                self.assertEqual(sink.writes[0]["predicate"], NS + "resolvedAt")
+
+    def test_graph_compact_prior_close_is_still_recognised(self):
+        sink = FakeGraph()
+        sink.rows = [{"p": "a:eventId", "e": PRIOR["event_id"]},
+                     {"p": "a:resolvedAt", "e": {"value": "1970-01-01T00:02:30Z", "datatype": "xsd:dateTime"}}]
+        sink.ends = [{"e": {"value": "1970-01-01T00:02:30Z", "datatype": "xsd:dateTime"}}]
+        receipt = sink.prepare_recovery(EVENT)
+        self.assertEqual(receipt["already_ended"], "1970-01-01T00:02:30Z")
+
+    def test_graph_unknown_prefix_and_mixed_duplicates_still_refuse(self):
+        for rows in ([{"p": "x:eventId", "e": PRIOR["event_id"]}],
+                     [{"p": "a:eventId", "e": PRIOR["event_id"]},
+                      {"p": "aegis:eventId", "e": PRIOR["event_id"]}],
+                     [{"p": "a:eventId", "e": "wrong"}]):
+            with self.subTest(rows=rows):
+                sink = FakeGraph()
+                sink.rows = rows
+                with self.assertRaises(ConnectionError):
+                    sink.prepare_recovery(EVENT)
+                self.assertEqual(sink.writes, [])
+
+    def test_setup_read_back_accepts_compact_reaction_type_only(self):
+        import io
+        def answer(rows):
+            def urlopen(req, timeout=None):
+                return io.BytesIO(json.dumps({"rows": rows}).encode())
+            return urlopen
+        for type_ in (NS + "Reaction", "aegis:Reaction", "a:Reaction"):
+            with self.subTest(type=type_), patch("graph_sink.urllib.request.urlopen",
+                                                 answer([{"type": type_}])):
+                self.assertTrue(FakeGraph().setup_present())
+        with patch("graph_sink.urllib.request.urlopen", answer([])):
+            self.assertFalse(FakeGraph().setup_present())
+        for type_ in ("x:Reaction", "a:Firing", NS + "Firing"):
+            with self.subTest(type=type_), patch("graph_sink.urllib.request.urlopen",
+                                                 answer([{"type": type_}])):
+                with self.assertRaises(ConnectionError):
+                    FakeGraph().setup_present()
+
     def test_graph_preserves_existing_earlier_close(self):
         sink = FakeGraph()
         sink.rows.append({"p": NS + "resolvedAt", "e": {"value": "1970-01-01T00:02:30Z", "datatype": "xsd:dateTime"}})

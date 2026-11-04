@@ -145,6 +145,25 @@ class QuipuFiringSink:
             f"  <{self.ns}eventId> {_lit(event['event_id'])} .\n"
         )
 
+    def _expand(self, term):
+        """Expand a compact IRI from a quipu /query answer to a full IRI.
+
+        Quipu has returned the aegis namespace both as "aegis:" and, later, as "a:";
+        either names this sink's namespace only when it is the legacy aegis one.
+        "quechua:" names the Quechua namespace. Anything else (a full IRI, an
+        unknown prefix, a non-string) is returned unchanged, so it can only match
+        if it already is the exact full IRI.
+        """
+        if not isinstance(term, str):
+            return term
+        prefixes = {"quechua:": QUECHUA_NS}
+        if self.ns == NS:
+            prefixes.update({"aegis:": NS, "a:": NS})
+        for prefix, namespace in prefixes.items():
+            if term.startswith(prefix):
+                return namespace + term[len(prefix):]
+        return term
+
     def _received(self, event: dict) -> bool:
         iri = firing_iri(self.reaction["label"], event["event_id"], self.ns)
         # Legacy OR quechua eventId, as a UNION of two single bound patterns (one
@@ -171,10 +190,8 @@ class QuipuFiringSink:
         rows = out.get("rows")
         if out.get("error") or out.get("truncated") or not isinstance(rows, list):
             raise ConnectionError("setup read-back UNKNOWN")
-        expected = {self.ns + "Reaction"}
-        if self.ns == NS:
-            expected.add("aegis:Reaction")
-        if any(not isinstance(row, dict) or row.get("type") not in expected for row in rows):
+        expected = self.ns + "Reaction"
+        if any(not isinstance(row, dict) or self._expand(row.get("type")) != expected for row in rows):
             raise ConnectionError("setup read-back has unexpected type")
         return bool(rows)
 
@@ -210,15 +227,13 @@ class QuipuFiringSink:
         rows = out.get("rows")
         if not isinstance(rows, list):
             raise ConnectionError("prior firing read-back unavailable")
-        predicates = {self.ns + "eventId": self.ns, "aegis:eventId": self.ns,
-                      QUECHUA_NS + "eventId": QUECHUA_NS, "quechua:eventId": QUECHUA_NS}
-        matches = [r for r in rows if r.get("p") in predicates]
+        predicates = {self.ns + "eventId": self.ns, QUECHUA_NS + "eventId": QUECHUA_NS}
+        matches = [r for r in rows if self._expand(r.get("p")) in predicates]
         if len(matches) != 1 or matches[0].get("e") != prior["event_id"]:
             raise ConnectionError("missing or ambiguous prior graph firing")
-        namespace = predicates[matches[0]["p"]]
-        end_predicates = {namespace + "resolvedAt",
-                          "aegis:resolvedAt" if namespace == self.ns else "quechua:resolvedAt"}
-        prior_ends = [_datetime_value(r["e"]) for r in rows if r.get("p") in end_predicates]
+        namespace = predicates[self._expand(matches[0]["p"])]
+        prior_ends = [_datetime_value(r["e"]) for r in rows
+                      if self._expand(r.get("p")) == namespace + "resolvedAt"]
         receipt = {"iri": iri, "predicate": namespace + "resolvedAt",
                    "delivery_scope": self.delivery_scope()}
         if prior_ends:
