@@ -1,0 +1,14 @@
+title = "Chaski fixture identifiers"
+
+[extend]
+useDefault = true
+
+# Offline github_ingress.episode_for output: SHA-256 identifiers of public event
+# metadata, not authentication material. Keep every default credential rule.
+[[allowlists]]
+description = "Deterministic GitHub activity identifiers in the recorded fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^fixtures/github/episodes\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"githubActivityKey": "[0-9a-f]{64}",?\s*$''']
