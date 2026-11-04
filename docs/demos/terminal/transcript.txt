@@ -1,0 +1,10 @@
+$ python3 run-demo.py status --state canary.json
+No offline canary runs.
+[exit 0]
+$ python3 run-demo.py run --state canary.json --focus urn:demo:canary
+Canary: FIRING -> UNKNOWN (preserved) -> RESOLVED.
+rule offline-canary UNKNOWN (keeping 1 firing): offline UNKNOWN control
+[exit 0]
+$ python3 run-demo.py status --state canary.json
+{"fired": true, "focus": "urn:demo:canary", "resolved": true, "transitions": 2, "unknown_preserved": true, "version": 1}
+[exit 0]

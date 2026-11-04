@@ -23,6 +23,15 @@ opening its history, or using graph-provided command text. The executable and
 its import tree must still come from the approved immutable deployment; hashing
 adapter configuration does not prove their artifact identity.
 
+Version 2 keeps the outer keys and reader contract, but selects
+`WeeklyScheduledProjection`. Its projection pins `scope`, `graph`, `target`,
+`owner`, `anchor_s`, `weekday` (Monday=0), `local_time` (`HH:MM`), `timezone`
+and `effective_at`; there is no `interval_s` configuration field. The typed
+reader's weekly job has `interval_s: null`, `weekday` and `local_time`. Mixing
+fixed and weekly forms refuses. The anchor must match its pinned weekly time.
+Both `byDay` and `startTime` changes participate in subscription routing.
+See [wall-clock deadlines](wall-clock-schedule.md) for DST and refusal policy.
+
 `--describe` returns the pinned graph and all declaration/schedule dependencies,
 without invoking ST. Its configuration digest participates in the consumer's
 subscription identity so a local policy refresh reconciles immediately.
@@ -41,9 +50,10 @@ distinct. The declaration's runtime verdicts must still be explicitly UNKNOWN.
 Set the outer emitter adapter timeout above reader timeout plus two seconds of
 cleanup and interpreter startup. An external kill is not confirmed cleanup.
 Owned process groups provide ordinary cleanup, not kernel containment; service
-cgroup/supervisor custody remains required. This adapter supports fixed elapsed
-intervals only. Calendar schedules such as a local Monday wall-clock time need
-calendar support before migration.
+cgroup/supervisor custody remains required. Version 1 preserves fixed elapsed
+intervals. Version 2 recomputes each weekly UTC deadline from its IANA local
+date, refusing ambiguous or nonexistent wall times. Broader calendar syntax is
+unsupported. No version enrolls a job or authorizes migration by itself.
 
 Keep an emitter label bound to its admitted job identity. Changing the job key
 requires a new label or the separately reviewed state-key migration protocol;

@@ -1,0 +1,603 @@
+{
+ "episodes": [
+  {
+   "delivery": "check_run.completed.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.CR_kwDOTvaTnM8AAAAcf5V7KA",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.e162d201174da937d731327876f6a9a9",
+      "target": "github.CR_kwDOTvaTnM8AAAAcf5V7KA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.e162d201174da937d731327876f6a9a9",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub check_run.completed in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:e162d201174da937d731327876f6a9a9",
+    "nodes": [
+     {
+      "description": "check_run.completed on intigraph/camayoc lint CR_kwDOTvaTnM8AAAAcf5V7KA",
+      "name": "github.activity.e162d201174da937d731327876f6a9a9",
+      "properties": {
+       "commitSha": "256a7e1433679ba0ccbff647d46738a65fdfc6af",
+       "githubActivityKey": "e162d201174da937d731327876f6a9a9298f52f29da8b0995451592fc4f28d33",
+       "githubActorLogin": "scbrown",
+       "githubBaseRef": "fix/stream-oversize-and-paused-metric",
+       "githubConclusion": "success",
+       "githubEventKind": "check_run.completed",
+       "githubStatus": "completed",
+       "occurredAt": "2026-10-27T18:51:29Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc lint CR_kwDOTvaTnM8AAAAcf5V7KA",
+      "name": "github.CR_kwDOTvaTnM8AAAAcf5V7KA",
+      "properties": {
+       "commitSha": "256a7e1433679ba0ccbff647d46738a65fdfc6af",
+       "githubDatabaseId": 122399587112,
+       "githubName": "lint",
+       "githubNodeId": "CR_kwDOTvaTnM8AAAAcf5V7KA",
+       "githubUrl": "https://github.com/intigraph/camayoc/actions/runs/40563810279/job/122399587112"
+      },
+      "type": "GitHubCheckRun"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:check_run.completed:e162d201174da937d731327876f6a9a9"
+   }
+  },
+  {
+   "delivery": "issue_comment.created.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOTvaTnM8AAAABgDTB7Q",
+      "target": "github.PR_kwDOTvaTnM8AAAABKYAZcg"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOTvaTnM8AAAABgDTB7Q",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.PR_kwDOTvaTnM8AAAABKYAZcg",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.ede5f1bffc4f91a45172422d500d78bf",
+      "target": "github.IC_kwDOTvaTnM8AAAABgDTB7Q"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.ede5f1bffc4f91a45172422d500d78bf",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub issue_comment.created in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:ede5f1bffc4f91a45172422d500d78bf",
+    "nodes": [
+     {
+      "description": "issue_comment.created on intigraph/camayoc comment IC_kwDOTvaTnM8AAAABgDTB7Q",
+      "name": "github.activity.ede5f1bffc4f91a45172422d500d78bf",
+      "properties": {
+       "githubActivityKey": "ede5f1bffc4f91a45172422d500d78bf808b81899f20c57a89008e54ef0602fa",
+       "githubActorLogin": "scbrown",
+       "githubEventKind": "issue_comment.created",
+       "githubMentions": [
+        "donna-box"
+       ],
+       "occurredAt": "2026-10-27T15:20:33Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc comment IC_kwDOTvaTnM8AAAABgDTB7Q",
+      "name": "github.IC_kwDOTvaTnM8AAAABgDTB7Q",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubDatabaseId": 6445908461,
+       "githubNodeId": "IC_kwDOTvaTnM8AAAABgDTB7Q",
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/166#issuecomment-6445908461"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/camayoc#166",
+      "name": "github.PR_kwDOTvaTnM8AAAABKYAZcg",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubCreatedAt": "2026-10-24T01:05:29Z",
+       "githubDatabaseId": 6007808249,
+       "githubNodeId": "PR_kwDOTvaTnM8AAAABKYAZcg",
+       "githubNumber": 166,
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/166"
+      },
+      "type": "GitHubPullRequest"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:issue_comment.created:ede5f1bffc4f91a45172422d500d78bf"
+   }
+  },
+  {
+   "delivery": "pull_request.closed.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.PR_kwDOTvaTnM8AAAABLF8ZkA",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.7010465e21e1289925b0f44aac08e0c9",
+      "target": "github.PR_kwDOTvaTnM8AAAABLF8ZkA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.7010465e21e1289925b0f44aac08e0c9",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub pull_request.closed in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:7010465e21e1289925b0f44aac08e0c9",
+    "nodes": [
+     {
+      "description": "pull_request.closed on intigraph/camayoc#177",
+      "name": "github.activity.7010465e21e1289925b0f44aac08e0c9",
+      "properties": {
+       "commitSha": "256a7e1433679ba0ccbff647d46738a65fdfc6af",
+       "githubActivityKey": "7010465e21e1289925b0f44aac08e0c93c3062e3bd6efc8eb2018ba3b64a2986",
+       "githubActorLogin": "scbrown",
+       "githubBaseRef": "main",
+       "githubDraft": false,
+       "githubEventKind": "pull_request.closed",
+       "githubMergeCommitSha": "24091efeed09250206b3f3295bc7a31867c5b2c2",
+       "githubMerged": true,
+       "githubState": "closed",
+       "occurredAt": "2026-10-27T18:56:18Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc#177",
+      "name": "github.PR_kwDOTvaTnM8AAAABLF8ZkA",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubCreatedAt": "2026-10-27T18:51:13Z",
+       "githubDatabaseId": 5039397264,
+       "githubNodeId": "PR_kwDOTvaTnM8AAAABLF8ZkA",
+       "githubNumber": 177,
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/177"
+      },
+      "type": "GitHubPullRequest"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:pull_request.closed:7010465e21e1289925b0f44aac08e0c9"
+   }
+  },
+  {
+   "delivery": "pull_request.opened.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.PR_kwDOTvaTnM8AAAABLF8ZkA",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.7d898563c277db327909e2335106fcb4",
+      "target": "github.PR_kwDOTvaTnM8AAAABLF8ZkA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.7d898563c277db327909e2335106fcb4",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub pull_request.opened in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:7d898563c277db327909e2335106fcb4",
+    "nodes": [
+     {
+      "description": "pull_request.opened on intigraph/camayoc#177",
+      "name": "github.activity.7d898563c277db327909e2335106fcb4",
+      "properties": {
+       "commitSha": "256a7e1433679ba0ccbff647d46738a65fdfc6af",
+       "githubActivityKey": "7d898563c277db327909e2335106fcb4425221aa9333f3033c4330ec09ab025a",
+       "githubActorLogin": "scbrown",
+       "githubBaseRef": "main",
+       "githubDraft": false,
+       "githubEventKind": "pull_request.opened",
+       "githubMentions": [
+        "sattler-bot",
+        "scbrown"
+       ],
+       "githubMerged": false,
+       "githubState": "open",
+       "occurredAt": "2026-10-27T18:51:13Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc#177",
+      "name": "github.PR_kwDOTvaTnM8AAAABLF8ZkA",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubCreatedAt": "2026-10-27T18:51:13Z",
+       "githubDatabaseId": 5039397264,
+       "githubNodeId": "PR_kwDOTvaTnM8AAAABLF8ZkA",
+       "githubNumber": 177,
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/177"
+      },
+      "type": "GitHubPullRequest"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:pull_request.opened:7d898563c277db327909e2335106fcb4"
+   }
+  },
+  {
+   "delivery": "pull_request_review.submitted.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.PRR_kwDOTvaTnM8AAAABUditdw",
+      "target": "github.PR_kwDOTvaTnM8AAAABKlkOYg"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.PRR_kwDOTvaTnM8AAAABUditdw",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.PR_kwDOTvaTnM8AAAABKlkOYg",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.78308458627da69bf31c4592aedd3a7e",
+      "target": "github.PRR_kwDOTvaTnM8AAAABUditdw"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.78308458627da69bf31c4592aedd3a7e",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub pull_request_review.submitted in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:78308458627da69bf31c4592aedd3a7e",
+    "nodes": [
+     {
+      "description": "pull_request_review.submitted on intigraph/camayoc review PRR_kwDOTvaTnM8AAAABUditdw",
+      "name": "github.activity.78308458627da69bf31c4592aedd3a7e",
+      "properties": {
+       "commitSha": "e0cfe0ebf24c2e7ec2974e79b166883e3b91b1d1",
+       "githubActivityKey": "78308458627da69bf31c4592aedd3a7e5869a1898afc1d2eae376ff81c2f7fcc",
+       "githubActorLogin": "scbrown",
+       "githubEventKind": "pull_request_review.submitted",
+       "githubMentions": [
+        "scbrown"
+       ],
+       "occurredAt": "2026-10-27T13:51:16Z",
+       "reviewState": "approved",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc review PRR_kwDOTvaTnM8AAAABUditdw",
+      "name": "github.PRR_kwDOTvaTnM8AAAABUditdw",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubDatabaseId": 5668121975,
+       "githubNodeId": "PRR_kwDOTvaTnM8AAAABUditdw",
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/172#pullrequestreview-5668121975"
+      },
+      "type": "GitHubReview"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/camayoc#172",
+      "name": "github.PR_kwDOTvaTnM8AAAABKlkOYg",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubCreatedAt": "2026-10-25T14:05:49Z",
+       "githubDatabaseId": 5005446754,
+       "githubNodeId": "PR_kwDOTvaTnM8AAAABKlkOYg",
+       "githubNumber": 172,
+       "githubUrl": "https://github.com/intigraph/camayoc/pull/172"
+      },
+      "type": "GitHubPullRequest"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:pull_request_review.submitted:78308458627da69bf31c4592aedd3a7e"
+   }
+  },
+  {
+   "delivery": "push.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.push.f553ced560cf350b61495e648b9a5e10",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.ccae1af69e3156f413f9895f147c904d",
+      "target": "github.push.f553ced560cf350b61495e648b9a5e10"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.ccae1af69e3156f413f9895f147c904d",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub push in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:ccae1af69e3156f413f9895f147c904d",
+    "nodes": [
+     {
+      "description": "push on intigraph/camayoc refs/heads/main b1417779562d..6b2edfdd2e92",
+      "name": "github.activity.ccae1af69e3156f413f9895f147c904d",
+      "properties": {
+       "commitSha": "6b2edfdd2e9204d69cbba2b359a12603dc60f0d0",
+       "githubActivityKey": "ccae1af69e3156f413f9895f147c904dd65e7c2d2b9c849b9d56bc9d647afd64",
+       "githubActorLogin": "scbrown",
+       "githubEventKind": "push",
+       "occurredAt": "2026-10-27T14:25:37Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc refs/heads/main b1417779562d..6b2edfdd2e92",
+      "name": "github.push.f553ced560cf350b61495e648b9a5e10",
+      "properties": {
+       "githubAfterSha": "6b2edfdd2e9204d69cbba2b359a12603dc60f0d0",
+       "githubBeforeSha": "b1417779562dbd534406ed42da9f1c5ce17fe07e",
+       "githubForced": false,
+       "githubRef": "refs/heads/main"
+      },
+      "type": "GitHubPush"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:push:ccae1af69e3156f413f9895f147c904d"
+   }
+  },
+  {
+   "delivery": "release.published.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.RE_kwDOTvaTnM4Y-A2D",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.d715851003ec56b4333efd33e89e4be4",
+      "target": "github.RE_kwDOTvaTnM4Y-A2D"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.d715851003ec56b4333efd33e89e4be4",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub release.published in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:d715851003ec56b4333efd33e89e4be4",
+    "nodes": [
+     {
+      "description": "release.published on intigraph/camayoc v0.1.3",
+      "name": "github.activity.d715851003ec56b4333efd33e89e4be4",
+      "properties": {
+       "githubActivityKey": "d715851003ec56b4333efd33e89e4be44e259a9ec38a78b9985a2eb5db8b7df2",
+       "githubActorLogin": "scbrown",
+       "githubEventKind": "release.published",
+       "githubPrerelease": false,
+       "occurredAt": "2026-10-20T21:41:34Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc v0.1.3",
+      "name": "github.RE_kwDOTvaTnM4Y-A2D",
+      "properties": {
+       "githubDatabaseId": 418909571,
+       "githubNodeId": "RE_kwDOTvaTnM4Y-A2D",
+       "githubTagName": "v0.1.3",
+       "githubUrl": "https://github.com/intigraph/camayoc/releases/tag/v0.1.3"
+      },
+      "type": "GitHubRelease"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:release.published:d715851003ec56b4333efd33e89e4be4"
+   }
+  },
+  {
+   "delivery": "workflow_run.completed.json",
+   "episode": {
+    "actor": "camayoc-github-ingress",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.WFR_kwLOTvaTnM8AAAAJcdZSRA",
+      "target": "github.R_kgDOTvaTnA"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.e1a2a685595d1c3aff9a1d0bbe7da3e3",
+      "target": "github.WFR_kwLOTvaTnM8AAAAJcdZSRA"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.e1a2a685595d1c3aff9a1d0bbe7da3e3",
+      "target": "github.R_kgDOTvaTnA"
+     }
+    ],
+    "episode_body": "GitHub workflow_run.completed in intigraph/camayoc",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:e1a2a685595d1c3aff9a1d0bbe7da3e3",
+    "nodes": [
+     {
+      "description": "workflow_run.completed on intigraph/camayoc ci WFR_kwLOTvaTnM8AAAAJcdZSRA",
+      "name": "github.activity.e1a2a685595d1c3aff9a1d0bbe7da3e3",
+      "properties": {
+       "commitSha": "24091efeed09250206b3f3295bc7a31867c5b2c2",
+       "githubActivityKey": "e1a2a685595d1c3aff9a1d0bbe7da3e331ed32ac334301490fd21cc452266fac",
+       "githubActorLogin": "scbrown",
+       "githubBaseRef": "main",
+       "githubConclusion": "success",
+       "githubEventKind": "workflow_run.completed",
+       "githubRunAttempt": 1,
+       "githubStatus": "completed",
+       "occurredAt": "2026-10-27T19:02:08Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/camayoc ci WFR_kwLOTvaTnM8AAAAJcdZSRA",
+      "name": "github.WFR_kwLOTvaTnM8AAAAJcdZSRA",
+      "properties": {
+       "commitSha": "24091efeed09250206b3f3295bc7a31867c5b2c2",
+       "githubDatabaseId": 40564576836,
+       "githubName": "ci",
+       "githubNodeId": "WFR_kwLOTvaTnM8AAAAJcdZSRA",
+       "githubUrl": "https://github.com/intigraph/camayoc/actions/runs/40564576836"
+      },
+      "type": "GitHubWorkflowRun"
+     },
+     {
+      "description": "intigraph/camayoc",
+      "name": "github.R_kgDOTvaTnA",
+      "properties": {
+       "githubDatabaseId": 1324782492,
+       "githubFullName": "intigraph/camayoc",
+       "githubNodeId": "R_kgDOTvaTnA",
+       "githubUrl": "https://github.com/intigraph/camayoc"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=200675765d56eb22:workflow_run.completed:e1a2a685595d1c3aff9a1d0bbe7da3e3"
+   }
+  }
+ ],
+ "source": "camayoc main 1b342cc tests/fixtures/github/deliveries mapped by scripts/github_ingress.py episode_for"
+}

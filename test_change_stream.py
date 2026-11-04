@@ -1,6 +1,7 @@
 import io
 import json
 import queue
+import sqlite3
 import threading
 from types import SimpleNamespace
 
@@ -65,6 +66,58 @@ def test_stream_reactor_idle_never_polls_change_feed(tmp_path):
     for now in range(60, 7201, 60):
         reactor.tick(now)
     assert len(pumped) == 120
+
+
+@pytest.mark.parametrize('cursor', [0, 629277])
+def test_stream_start_resumes_existing_custody_without_poll(tmp_path, monkeypatch, cursor):
+    import chaski
+    import change_stream
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE change_cursor(id INTEGER PRIMARY KEY, tx INTEGER)')
+    conn.execute('INSERT INTO change_cursor VALUES(1,?)', (cursor,))
+    conn.commit()
+    from incremental import bind_stream_source
+    bind_stream_source(conn, {'store_id': 'fixture', 'log_epoch': 'one'}, cursor)
+    feed = SimpleNamespace(conn=conn, cursor_tx=-1, ready=False,
+                           poll=lambda: pytest.fail('startup must not GET /changes'))
+    opened = []
+    monkeypatch.setattr(change_stream, 'ChangeStream',
+                        lambda quipu, tx: opened.append(tx) or object())
+    monkeypatch.setattr(chaski, 'serve_metrics', lambda *args: None)
+    def stop(now):
+        raise KeyboardInterrupt
+    reactor = SimpleNamespace(change_feed=feed, quipu=object(), event_poll_s=60, tick=stop)
+    with pytest.raises(KeyboardInterrupt):
+        chaski._serve_consumer(SimpleNamespace(once=False, changes_stream=True, metrics_port=0), reactor, [])
+    assert opened == [cursor] and feed.ready and feed.cursor_tx == cursor
+    assert conn.execute('SELECT tx FROM change_cursor').fetchall() == [(cursor,)]
+    conn.close()
+
+
+def test_stream_start_without_custody_refuses_without_tail_reset(monkeypatch):
+    import chaski
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE change_cursor(id INTEGER PRIMARY KEY, tx INTEGER)')
+    feed = SimpleNamespace(conn=conn, poll=lambda: pytest.fail('no implicit tail bootstrap'))
+    reactor = SimpleNamespace(change_feed=feed, quipu=object(), event_poll_s=60)
+    with pytest.raises(RuntimeError, match='explicitly bootstrapped durable cursor'):
+        chaski._serve_consumer(SimpleNamespace(once=False, changes_stream=True), reactor, [])
+    assert conn.execute('SELECT tx FROM change_cursor').fetchall() == []
+    conn.close()
+
+
+@pytest.mark.parametrize('flag, expected', [(None, True), ('--changes-stream', True),
+                                         ('--no-changes-stream', False)])
+def test_cli_stream_default_and_explicit_poll_rollback(tmp_path, monkeypatch, flag, expected):
+    import chaski
+    seen = []
+    monkeypatch.setattr(chaski, 'run_consumer', lambda args: seen.append(args.changes_stream) or 0)
+    args = ['--quipu', 'http://example.invalid', '--rules', str(tmp_path / 'rules.yaml'),
+            '--state', str(tmp_path / 'cursor.json')]
+    if flag:
+        args.append(flag)
+    assert chaski.main(args) == 0
+    assert seen == [expected]
 
 
 def queued_stream(count):

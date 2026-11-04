@@ -17,12 +17,14 @@ import time
 
 from scheduled_projection import MAX_TIME, ScheduledProjection
 from scheduled_receiver import ExecutionScope
+from weekly_projection import WeeklyScheduledProjection
 
 SCHEMA = 'https://schema.org/'
 QUECHUA = 'https://scbrown.github.io/quechua/ns#'
 TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type'
 ATTRIBUTES = [TYPE, *[SCHEMA+x for x in ('name', 'identifier', 'location', 'target',
-    'potentialAction', 'eventSchedule', 'repeatFrequency', 'scheduleTimezone', 'startDate')],
+    'potentialAction', 'eventSchedule', 'repeatFrequency', 'scheduleTimezone', 'startDate',
+    'byDay', 'startTime')],
     QUECHUA+'sourceKind', QUECHUA+'owner', QUECHUA+'enabled']
 
 
@@ -73,13 +75,15 @@ def load_config(path, digest):
         raise ValueError('configuration changed')
     config = _decode(raw)
     _keys(config, ('version', 'projection', 'reader'))
-    if type(config['version']) is not int or config['version'] != 1:
+    if type(config['version']) is not int or config['version'] not in (1, 2):
         raise ValueError('adapter configuration version unsupported')
-    _keys(config['projection'], ('scope', 'graph', 'target', 'owner', 'anchor_s', 'interval_s',
-                                'timezone', 'effective_at'))
+    fields = ('scope', 'graph', 'target', 'owner', 'anchor_s', 'timezone', 'effective_at')
+    _keys(config['projection'], fields + (('interval_s',) if config['version'] == 1
+                                        else ('weekday', 'local_time')))
     projection = dict(config['projection'])
     projection['scope'] = ExecutionScope(**projection['scope'])
-    pinned = ScheduledProjection(**projection)
+    kind = ScheduledProjection if config['version'] == 1 else WeeklyScheduledProjection
+    pinned = kind(**projection)
     reader = config['reader']
     _keys(reader, ('executable', 'root', 'env', 'timeout_s', 'output_limit'))
     for key in ('executable', 'root'):

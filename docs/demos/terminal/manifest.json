@@ -1,0 +1,73 @@
+{
+  "theme": "stack-terminal-24",
+  "versions": {
+    "python3": "Python 3.14.4"
+  },
+  "binary_sha256": {
+    "python3": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+  },
+  "version_args": {
+    "python3": [
+      "--version"
+    ]
+  },
+  "inputs_sha256": {
+    "render.py": "bebbe000565314f18a58731f2a1a4690577db127b3673fa10a45ce74eef0f23c",
+    "tape": "515f81d04273c5686aab6c756385a67bc84074c26f0cf3e3c3d5c06981203430",
+    "demo.py": "2fde58e0c676bb8c094fe8a2aadbb0446433f7b2ade91e8394b8449d18931b31",
+    "chaski.py": "eb81a94b0d6eaaab04a3a16aa6752e09dc534c80355bf2d5472c00856be506ac",
+    "deadline_heap.py": "c7537a927a373319d954694fe0361be806099437642d4d15ef2fa6285f4e1338",
+    "run-demo.py": "b209b253b9254b2a0c0551bdf7d00fa8ade9412344106bb0d2d2403194a78fc4"
+  },
+  "duration_seconds": 20.0,
+  "timeline": "deliberate reading holds; execution times recorded separately",
+  "frames_checked": 3,
+  "commands": [
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "status",
+        "--state",
+        "canary.json"
+      ],
+      "exit": 0,
+      "seconds": 0.067776,
+      "stdout": "No offline canary runs.\n",
+      "stderr": ""
+    },
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "run",
+        "--state",
+        "canary.json",
+        "--focus",
+        "urn:demo:canary"
+      ],
+      "exit": 0,
+      "seconds": 0.092051,
+      "stdout": "Canary: FIRING -> UNKNOWN (preserved) -> RESOLVED.\n",
+      "stderr": "rule offline-canary UNKNOWN (keeping 1 firing): offline UNKNOWN control\n"
+    },
+    {
+      "tool": "python3",
+      "args": [
+        "run-demo.py",
+        "status",
+        "--state",
+        "canary.json"
+      ],
+      "exit": 0,
+      "seconds": 0.058068,
+      "stdout": "{\"fired\": true, \"focus\": \"urn:demo:canary\", \"resolved\": true, \"transitions\": 2, \"unknown_preserved\": true, \"version\": 1}\n",
+      "stderr": ""
+    }
+  ],
+  "sha256": {
+    "demo.svg": "f3e14a99e81d42d9fa135d20d779e7a0c4f804947a20f90d31f423249bfebd13",
+    "transcript.txt": "e10522053b2e2f03f73271b47fe24fd7bdc6720d405256183b3aadbd4ae6f737",
+    "demo.cast": "ce30151bb5ac72e80c761be89f23d513e7fb2d4ac42716f07e4cb9372052ebda"
+  }
+}

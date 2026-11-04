@@ -1,0 +1,4 @@
+{"version": 2, "width": 65, "height": 14, "title": "Chaski: UNKNOWN is not resolved", "env": {"TERM": "dumb"}}
+[0.0, "o", "\u001b[2J\u001b[H$ python3 run-demo.py status --state canary.json\r\nNo offline canary runs.\r\n"]
+[4.0, "o", "\u001b[2J\u001b[H$ python3 run-demo.py run --state canary.json --focus \r\nurn:demo:canary\r\nCanary: FIRING -> UNKNOWN (preserved) -> RESOLVED.\r\nrule offline-canary UNKNOWN (keeping 1 firing): offline UNKNOWN \r\ncontrol\r\n"]
+[12.0, "o", "\u001b[2J\u001b[H$ python3 run-demo.py status --state canary.json\r\n{\"fired\": true, \"focus\": \"urn:demo:canary\", \"resolved\": true, \r\n\"transitions\": 2, \"unknown_preserved\": true, \"version\": 1}\r\n"]

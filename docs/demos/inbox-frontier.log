@@ -1,0 +1,7 @@
+Script started on 2026-10-28 20:07:23-04:00 [COMMAND="stty -onlcr; python3 -m pytest test_incremental.py -q -s --color=no -k "routing_and_snapshot_work or metrics_never_observe"" <not executed on terminal>]
+{'inbox_sizes': [1000, 20000], 'route_snapshot_legacy_vm_steps': [(389, 118, 44069), (420, 118, 880055)]}
+{'route_legacy_read_chars': [(90231, 1429622), (102531, 55660674)]}
+..
+2 passed, 26 deselected in 0.82s
+
+Script done on 2026-10-28 20:07:24-04:00 [COMMAND_EXIT_CODE="0"]

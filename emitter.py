@@ -744,7 +744,7 @@ class Runner:
                  self.runs["ok"],self.runs["unknown"]))
         self._publish()
 
-    def _publish(self) -> None:
+    def _snapshot_values(self) -> dict:
         pending, oldest = self.conn.execute(
             "SELECT COUNT(*), MIN(created) FROM ("
             " SELECT created FROM outbox WHERE emitter=? AND delivered_at IS NULL"
@@ -760,10 +760,14 @@ class Runner:
             "JOIN verdicts v ON v.last_event=o.event_id "
             "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=?",
             (self.emitter.label,self.emitter.to_verdict)).fetchone()
-        snap = {"renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
+        return {"renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
                 "runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
                 "oldest_created": oldest, "delivered": delivered}
+
+    def _publish(self) -> None:
+        # Subclasses compose their fields before any reader can see the snapshot.
+        snap = self._snapshot_values()
         with self._snap_lock:
             self._snapshot = snap
 

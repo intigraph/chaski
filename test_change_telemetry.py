@@ -8,20 +8,22 @@ import pytest
 
 from change_stream import ChangeStream
 from chaski import Reactor
-from incremental import ChangeFeed, SCHEMA
+from incremental import ChangeFeed, SCHEMA, bind_stream_source
 
 
 def feed_at(cursor=10):
     conn = sqlite3.connect(':memory:', isolation_level=None)
     conn.executescript(SCHEMA)
     conn.execute('INSERT INTO change_cursor VALUES (1,?)', (cursor,))
+    bind_stream_source(conn, {'store_id': 'fixture', 'log_epoch': 'one'}, cursor)
     runner = SimpleNamespace(conn=conn, accepts=lambda record: False)
     return ChangeFeed(SimpleNamespace(), [runner])
 
 
 def page(cursor=11):
     return {'records': [{'tx': cursor, 'sequence': 0, 'op': 'assert'}],
-            'next_tx': cursor, 'watermark_tx': cursor}
+            'next_tx': cursor, 'watermark_tx': cursor,
+            'source': {'store_id': 'fixture', 'log_epoch': 'one'}}
 
 
 def stream_at(cursor=10):

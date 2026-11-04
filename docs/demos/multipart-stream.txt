@@ -1,0 +1,8 @@
+Script started on 2026-10-24 12:15:58-04:00 [COMMAND="uv run --locked python docs/demos/multipart-stream.py" <not executed on terminal>]
+Synthetic transaction: two ordered parts, two records; no network or production state.
+Base: d94e5f1711585c17261fc25e160b1783e061510b
+BEFORE: ProtocolError unexpected change stream event
+AFTER without commit: ProtocolError truncated multipart transaction ; no page emitted
+AFTER with commit: one page, cursor=11, records=2, private disk-backed staging
+
+Script done on 2026-10-24 12:15:58-04:00 [COMMAND_EXIT_CODE="0"]

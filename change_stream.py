@@ -1,57 +1,32 @@
 """Bounded change-stream delivery; resume advances only after durable inbox commit."""
 from __future__ import annotations
 
-import json
 import logging
 import queue
 import threading
-import time
 import urllib.request
+# Compatibility imports remain available to callers and staging controls.
+import shutil  # noqa: F401
+import tempfile  # noqa: F401
+import time
 
 from emitter import ProtocolError
+from change_frames import (  # noqa: F401
+    ASSEMBLY_SECONDS, DISK_FLOOR_BYTES, FRAME_BYTES, MAX_CURSOR,
+    MAX_TRANSACTION_BYTES, MAX_TRANSACTION_PARTS, StagedRecords,
+)
+from change_frames import frames as decoded_frames, ProtocolError as FrameError
 
 LOG = logging.getLogger("chaski.changes.stream")
-FRAME_BYTES = 1 << 20
-MAX_CURSOR = (1 << 63) - 1
 BURST_PAGES = 64
 BURST_SECONDS = 0.05
 
 
 def frames(response):
-    """Parse only complete, bounded Quipu transaction frames; heartbeats do no work."""
-    fields, size = {}, 0
-    while True:
-        line = response.readline(FRAME_BYTES + 1)
-        if not line:
-            if fields:
-                raise ProtocolError("truncated stream frame")
-            return
-        size += len(line)
-        if size > FRAME_BYTES:
-            raise ProtocolError("stream frame exceeds budget")
-        line = line.rstrip(b'\r\n')
-        if not line:
-            if fields:
-                if fields.get('event') != 'quipu.changes' or set(fields) != {'event', 'id', 'data'}:
-                    raise ProtocolError("unexpected change stream event")
-                raw = fields['id']
-                if not raw.isascii() or not raw.isdecimal() or int(raw) > MAX_CURSOR:
-                    raise ProtocolError("invalid transaction stream ID")
-                page = json.loads(fields['data'])
-                if not isinstance(page, dict):
-                    raise ProtocolError("invalid transaction stream page")
-                yield int(raw), page
-            fields, size = {}, 0
-            continue
-        if line.startswith(b':'):
-            continue
-        key, sep, value = line.partition(b':')
-        if not sep:
-            raise ProtocolError("invalid stream field")
-        key, value = key.decode('ascii'), value.removeprefix(b' ').decode('utf-8')
-        if key not in {'event', 'id', 'data'} or key in fields:
-            raise ProtocolError("duplicate or unsupported stream field")
-        fields[key] = value
+    try:
+        yield from decoded_frames(response)
+    except FrameError as exc:
+        raise ProtocolError(str(exc)) from exc
 
 
 class ChangeStream:
@@ -80,15 +55,19 @@ class ChangeStream:
                     if response.headers.get_content_type() != 'text/event-stream':
                         raise ProtocolError('change stream has wrong content type')
                     for stream_id, page in frames(response):
-                        done = threading.Event()
-                        self.pending.put((stream_id, page, done), timeout=45)
-                        self.wakeup.set()
-                        while not done.wait(1):
-                            if self.stop.is_set():
-                                return
-                        if stream_id != self.cursor:
-                            raise ProtocolError('delivery was not durably applied')
-                        backoff = 1
+                        try:
+                            done = threading.Event()
+                            self.pending.put((stream_id, page, done), timeout=45)
+                            self.wakeup.set()
+                            while not done.wait(1):
+                                if self.stop.is_set():
+                                    return
+                            if stream_id != self.cursor:
+                                raise ProtocolError('delivery was not durably applied')
+                            backoff = 1
+                        finally:
+                            if isinstance(page.get('records'), StagedRecords):
+                                page['records'].close()
                 raise ProtocolError("change stream disconnected")
             except Exception as exc:
                 self.errors += 1

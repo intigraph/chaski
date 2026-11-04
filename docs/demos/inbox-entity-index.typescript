@@ -1,0 +1,33 @@
+Script started on 2026-10-25 00:31:33-04:00 [COMMAND="python3 scripts/demo-inbox-entity-index.py" <not executed on terminal>]
+{
+  "fixture_rows": 60000,
+  "batch": 2,
+  "incremental_sha256": "adfd457ebc90ced96254a7af6dddfbf6ef6f14e55c97ab3fdf01e35cc0f94792",
+  "before": {
+    "seconds": 0.1789371978957206,
+    "write_bytes": 69849088,
+    "row_count": 10,
+    "result_sha256": "23e4c24d777cc7b51bf3d8872100c8e0d2c1b676d817d92a8b3c2df642f2540c",
+    "plan": [
+      "SEARCH change_inbox USING INDEX sqlite_autoindex_change_inbox_1 (emitter=?)",
+      "LIST SUBQUERY 1",
+      "SEARCH change_inbox USING INDEX sqlite_autoindex_change_inbox_1 (emitter=?)",
+      "USE TEMP B-TREE FOR GROUP BY",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ]
+  },
+  "after": {
+    "seconds": 0.10239622206427157,
+    "write_bytes": 0,
+    "row_count": 10,
+    "result_sha256": "23e4c24d777cc7b51bf3d8872100c8e0d2c1b676d817d92a8b3c2df642f2540c",
+    "plan": [
+      "SEARCH change_inbox USING INDEX sqlite_autoindex_change_inbox_1 (emitter=?)",
+      "LIST SUBQUERY 1",
+      "SEARCH change_inbox USING INDEX change_inbox_entity (emitter=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ]
+  }
+}
+
+Script done on 2026-10-25 00:31:34-04:00 [COMMAND_EXIT_CODE="0"]

@@ -14,6 +14,7 @@ import math
 import subprocess
 import urllib.parse
 
+from change_stream import StagedRecords
 from emitter import DELIVER_PER_TICK, ProtocolError, Runner, deliver_pending, observe, queue_recoveries
 
 LOG = logging.getLogger("chaski.changes")
@@ -24,6 +25,10 @@ CREATE TABLE IF NOT EXISTS change_cursor (id INTEGER PRIMARY KEY CHECK(id=1), tx
 CREATE TABLE IF NOT EXISTS change_inbox (
  emitter TEXT NOT NULL, tx INTEGER NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
  PRIMARY KEY(emitter,tx,seq));
+-- Look up all changes for selected entities. Batch selection uses the maintained
+-- frontier below; grouping this index on every tick would still scan the inbox.
+CREATE INDEX IF NOT EXISTS change_inbox_entity
+ ON change_inbox(emitter,json_extract(payload,'$.entity'),tx,seq);
 CREATE TABLE IF NOT EXISTS adapter_deadlines (
  emitter TEXT NOT NULL, item TEXT NOT NULL, due REAL NOT NULL, priority INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(emitter,item));
@@ -33,6 +38,62 @@ CREATE TABLE IF NOT EXISTS adapter_subscription (
  emitter TEXT PRIMARY KEY, digest TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS adapter_deadlines_due ON adapter_deadlines(emitter,due);
 """
+
+
+INBOX_PROJECTION = """
+CREATE INDEX IF NOT EXISTS change_inbox_entity_seq
+ ON change_inbox(emitter,json_extract(payload,'$.entity'),seq);
+CREATE TABLE change_inbox_frontier (
+ emitter TEXT NOT NULL, entity TEXT NOT NULL, min_tx INTEGER NOT NULL, min_seq INTEGER NOT NULL,
+ PRIMARY KEY(emitter,entity));
+CREATE INDEX change_inbox_frontier_order ON change_inbox_frontier(emitter,min_tx,min_seq,entity);
+CREATE TABLE change_inbox_counts (emitter TEXT PRIMARY KEY, pending INTEGER NOT NULL);
+INSERT INTO change_inbox_frontier
+ SELECT emitter,json_extract(payload,'$.entity'),MIN(tx),MIN(seq) FROM change_inbox
+ WHERE json_extract(payload,'$.entity') IS NOT NULL GROUP BY emitter,json_extract(payload,'$.entity');
+INSERT INTO change_inbox_counts SELECT emitter,COUNT(*) FROM change_inbox GROUP BY emitter;
+CREATE TRIGGER change_inbox_projection_insert AFTER INSERT ON change_inbox BEGIN
+ INSERT INTO change_inbox_counts VALUES (NEW.emitter,1)
+ ON CONFLICT(emitter) DO UPDATE SET pending=pending+1;
+ INSERT INTO change_inbox_frontier
+ SELECT NEW.emitter,json_extract(NEW.payload,'$.entity'),NEW.tx,NEW.seq
+ WHERE json_extract(NEW.payload,'$.entity') IS NOT NULL
+ ON CONFLICT(emitter,entity) DO UPDATE SET
+ min_tx=MIN(min_tx,excluded.min_tx), min_seq=MIN(min_seq,excluded.min_seq);
+END;
+CREATE TRIGGER change_inbox_projection_delete AFTER DELETE ON change_inbox BEGIN
+ UPDATE change_inbox_counts SET pending=pending-1 WHERE emitter=OLD.emitter;
+ DELETE FROM change_inbox_frontier WHERE emitter=OLD.emitter AND entity=json_extract(OLD.payload,'$.entity');
+ INSERT INTO change_inbox_frontier
+ SELECT OLD.emitter,json_extract(OLD.payload,'$.entity'),
+ (SELECT MIN(tx) FROM change_inbox INDEXED BY change_inbox_entity
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity')),
+ (SELECT MIN(seq) FROM change_inbox INDEXED BY change_inbox_entity_seq
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity'))
+ WHERE EXISTS (SELECT 1 FROM change_inbox INDEXED BY change_inbox_entity
+  WHERE emitter=OLD.emitter AND json_extract(payload,'$.entity')=json_extract(OLD.payload,'$.entity'));
+END;
+CREATE TABLE change_inbox_projection_version (version INTEGER PRIMARY KEY CHECK(version=1));
+INSERT INTO change_inbox_projection_version VALUES (1);
+"""
+
+
+def prepare_inbox_projection(conn):
+    """Backfill once without changing retained inbox rows or their cursor.
+
+    Index construction/backfill is an explicit startup migration cost. Thereafter
+    INSERT/DELETE triggers maintain the frontier and count in the writer's own
+    transaction, including when an older binary is used for rollback.
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='change_inbox_projection_version'").fetchone():
+        return
+    try:
+        conn.executescript("BEGIN IMMEDIATE;\n" + INBOX_PROJECTION + "\nCOMMIT;")
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def call(emitter, request=None):
@@ -57,6 +118,7 @@ class ChangeRunner(Runner):
     def __init__(self, emitter, conn, sink, budget=None):
         self.emitter = emitter
         conn.executescript(SCHEMA)
+        prepare_inbox_projection(conn)
         self.subscription = call(emitter)
         self.attributes = strings(self.subscription.get("attributes"))
         self.graphs = strings(self.subscription.get("graphs"))
@@ -122,10 +184,13 @@ class ChangeRunner(Runner):
 
     def route_pending(self, now):
         label = self.emitter.label
+        # Unary + removes the frontier TEXT affinity, matching json_extract's
+        # expression-index affinity; otherwise SQLite can scan every emitter row.
         pending = self.conn.execute(
-            "SELECT tx,seq,payload FROM change_inbox WHERE emitter=? AND json_extract(payload,'$.entity') IN "
-            "(SELECT json_extract(payload,'$.entity') FROM change_inbox WHERE emitter=? "
-            " GROUP BY json_extract(payload,'$.entity') ORDER BY MIN(tx),MIN(seq) LIMIT ?) ORDER BY tx,seq",
+            "SELECT tx,seq,payload FROM change_inbox INDEXED BY change_inbox_entity "
+            "WHERE emitter=? AND json_extract(payload,'$.entity') IN "
+            "(SELECT +entity FROM change_inbox_frontier WHERE emitter=? "
+            " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
         if not pending:
             return
@@ -209,14 +274,15 @@ class ChangeRunner(Runner):
                 obligations.append(due)
         return max(now + 0.01, min(obligations))
 
-    def _publish(self):
-        super()._publish()
-        pending = self.conn.execute("SELECT COUNT(*) FROM change_inbox WHERE emitter=?",
-                                    (self.emitter.label,)).fetchone()[0]
+    def _snapshot_values(self):
+        snap = super()._snapshot_values()
+        row = self.conn.execute("SELECT pending FROM change_inbox_counts WHERE emitter=?",
+                                (self.emitter.label,)).fetchone()
+        pending = row[0] if row else 0
         count, due = self.conn.execute("SELECT COUNT(*), MIN(due) FROM adapter_deadlines WHERE emitter=?",
                                       (self.emitter.label,)).fetchone()
-        with self._snap_lock:
-            self._snapshot.update(change_pending=pending, deadlines=count, next_due=due or 0)
+        snap.update(change_pending=pending, deadlines=count, next_due=due or 0)
+        return snap
 
     def metrics(self, esc):
         lines = super().metrics(esc)
@@ -226,6 +292,47 @@ class ChangeRunner(Runner):
                             ("next_due_timestamp_seconds", s["next_due"])):
             lines.append(f'chaski_emitter_{name}{{emitter="{esc(self.emitter.label)}"}} {value}')
         return lines
+
+
+def _source_identity(value):
+    if (not isinstance(value, dict) or set(value) != {'store_id', 'log_epoch'}
+            or any(not isinstance(v, str) or not v for v in value.values())):
+        raise ProtocolError('explicit change store and epoch required')
+    return value['store_id'], value['log_epoch']
+
+
+def require_stream_source(conn, identity=None):
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_source'").fetchone()
+    if not exists:
+        raise ProtocolError('change source unbound; explicit reviewed transition required')
+    rows = conn.execute('SELECT store_id,log_epoch FROM change_source').fetchall()
+    if len(rows) != 1:
+        raise ProtocolError('ambiguous durable change source')
+    bound = _source_identity(dict(zip(('store_id', 'log_epoch'), rows[0])))
+    if identity is not None and _source_identity(identity) != bound:
+        raise ProtocolError('change store or epoch changed; cursor retained')
+    return bound
+
+
+def bind_stream_source(conn, identity, expected_cursor):
+    """Explicit local transition; caller holds both normal consumer leases."""
+    source = _source_identity(identity)
+    if type(expected_cursor) is not int or not 0 <= expected_cursor <= 9223372036854775807:
+        raise ProtocolError('exact existing change cursor required')
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if conn.execute('SELECT tx FROM change_cursor WHERE id=1').fetchall() != [(expected_cursor,)]:
+            raise ProtocolError('change cursor differs from transition')
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_source'").fetchone()
+        if exists:
+            require_stream_source(conn, identity)
+        else:
+            conn.execute('CREATE TABLE change_source(store_id TEXT NOT NULL,log_epoch TEXT NOT NULL)')
+            conn.execute('INSERT INTO change_source VALUES (?,?)', source)
+        conn.execute('COMMIT')
+    except BaseException:
+        conn.execute('ROLLBACK')
+        raise
 
 
 class ChangeFeed:
@@ -278,7 +385,7 @@ class ChangeFeed:
         if row is not None and row[0] != since:
             raise ProtocolError("stale change delivery")
         records, watermark, cursor = out["records"], out["watermark_tx"], out["next_tx"]
-        if not isinstance(records, list) or type(watermark) is not int or type(cursor) is not int:
+        if not isinstance(records, (list, StagedRecords)) or type(watermark) is not int or type(cursor) is not int:
             raise ProtocolError("invalid change page")
         if watermark < 0 or cursor < 0 or (row is not None and cursor > watermark):
             raise ProtocolError("change cursor outside committed prefix")
@@ -288,19 +395,27 @@ class ChangeFeed:
                                       or stream_id != cursor or stream_id <= since):
             raise ProtocolError("stream ID is not the durable transaction cursor")
         cursor = cursor if row and (records or stream_id is not None) else watermark
-        deliveries = []
-        for r in records if row else []:
-            if (not isinstance(r, dict) or type(r.get("tx")) is not int
-                    or type(r.get("sequence")) is not int or r["sequence"] < 0
-                    or not since < r["tx"] <= cursor
-                    or r.get("op") not in {"assert", "retract", "tombstone"}):
-                raise ProtocolError("invalid change record")
-            for runner in self.runners:
-                if runner.accepts(r):
-                    deliveries.append((runner.emitter.label, r["tx"], r["sequence"], json.dumps(r)))
+        dirty = set()
+        def deliveries():
+            # SQLite consumes this generator inside ONE transaction. A bad late
+            # record rolls back earlier inbox inserts as well as the cursor;
+            # multipart staging never becomes a whole-transaction Python list.
+            for r in records if row else []:
+                if (not isinstance(r, dict) or type(r.get("tx")) is not int
+                        or type(r.get("sequence")) is not int or r["sequence"] < 0
+                        or not since < r["tx"] <= cursor
+                        or r.get("op") not in {"assert", "retract", "tombstone"}):
+                    raise ProtocolError("invalid change record")
+                for runner in self.runners:
+                    if runner.accepts(r):
+                        dirty.add(runner.emitter.label)
+                        yield runner.emitter.label, r["tx"], r["sequence"], json.dumps(r)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.executemany("INSERT OR IGNORE INTO change_inbox VALUES (?,?,?,?)", deliveries)
+            if stream_id is not None:
+                _source_identity(out.get('source'))
+                require_stream_source(self.conn, out['source'])
+            self.conn.executemany("INSERT OR IGNORE INTO change_inbox VALUES (?,?,?,?)", deliveries())
             self.conn.execute("INSERT OR REPLACE INTO change_cursor VALUES (1,?)", (cursor,))
             self.conn.execute("COMMIT")
         except BaseException:
@@ -309,7 +424,7 @@ class ChangeFeed:
         self.lag = watermark - cursor
         self.cursor_tx = cursor
         self.ready = True
-        self.dirty.update(row[0] for row in deliveries)
+        self.dirty.update(dirty)
         if row is None:
             self.dirty.update(r.emitter.label for r in self.runners)
         return row is not None and cursor > since and cursor < watermark

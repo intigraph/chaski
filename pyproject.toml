@@ -1,6 +1,6 @@
 [project]
 name = "chaski-reactor"
-version = "0.1.0"
+version = "0.3.0"
 description = "Reactions and notifications when your knowledge graph changes"
 readme = "README.md"
 license = "Apache-2.0"
@@ -15,9 +15,9 @@ requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project.urls]
-Homepage = "https://github.com/scbrown/chaski"
-Repository = "https://github.com/scbrown/chaski"
-Issues = "https://github.com/scbrown/chaski/issues"
+Homepage = "https://github.com/intigraph/chaski"
+Repository = "https://github.com/intigraph/chaski"
+Issues = "https://github.com/intigraph/chaski/issues"
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
@@ -26,14 +26,17 @@ default = true
 [project.scripts]
 chaski = "chaski:main"
 chaski-event = "external_event:main"
+chaski-github-routes = "github_routes:main"
+chaski-github-work = "github_work:main"
 chaski-once = "once:main"
 chaski-state-key-migrate = "state_key_migration:main"
 
 [tool.setuptools]
 py-modules = [
-    "alertmanager_sink", "async_scheduled_sink", "change_stream", "chaski", "command_sink",
+    "chaski_prime", "chaski_prime_state", "chaski_primer",
+    "alertmanager_sink", "async_scheduled_sink", "change_frames", "change_stream", "chaski", "command_sink",
     "consumer_lease", "deadline_heap", "demo", "emitter", "external_event", "failure_family_adapter",
-    "fixed_outcome_executor", "graph_sink", "incremental", "once", "scheduled_catalogue_adapter", "scheduled_event_sink", "scheduled_projection", "scheduled_receiver", "scheduled_sink_factory", "shuttle_process_port", "slot_receiver", "state_key_migration",
+    "fixed_outcome_executor", "github_routes", "github_work", "graph_sink", "incremental", "once", "scheduled_catalogue_adapter", "scheduled_event_sink", "scheduled_projection", "scheduled_receiver", "scheduled_sink_factory", "shuttle_process_port", "slot_receiver", "state_key_migration", "wall_clock_schedule", "weekly_projection",
 ]
 
 [tool.pytest.ini_options]
