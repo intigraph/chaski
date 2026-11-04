@@ -5,8 +5,8 @@
 
 ### Features
 
-* **cli:** chaski prime per the stack prime contract (aegis-km3g.6) ([#48](https://github.com/intigraph/chaski/issues/48)) ([73b6482](https://github.com/intigraph/chaski/commit/73b648288857c17018fe5350dacdc5ecd3944da8))
-* **github:** routing rules from GitHub activity facts to work requests (aegis-c01c.4) ([#49](https://github.com/intigraph/chaski/issues/49)) ([83384e3](https://github.com/intigraph/chaski/commit/83384e33d74aedeb2d40ff45237a36326f273bc8))
+* **cli:** chaski prime per the stack prime contract ([#48](https://github.com/intigraph/chaski/issues/48)) ([73b6482](https://github.com/intigraph/chaski/commit/73b648288857c17018fe5350dacdc5ecd3944da8))
+* **github:** routing rules from GitHub activity facts to work requests ([#49](https://github.com/intigraph/chaski/issues/49)) ([83384e3](https://github.com/intigraph/chaski/commit/83384e33d74aedeb2d40ff45237a36326f273bc8))
 
 
 ### Bug Fixes
