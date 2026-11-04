@@ -1,30 +1,30 @@
 {
-  "source_revision": "fc3c017bdc91b3b08792577e5caf40b76f54904a",
-  "reviewed_at": "2026-10-20T23:13:31.537295Z",
+  "source_revision": "88bc77dc72a565c9a2e9a9828127f75decfe0a29",
+  "reviewed_at": "2026-11-04T05:10:01.168129Z",
   "max_age_seconds": 2592000,
   "records": [
     {
       "kind": "idea",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#what-it-does",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#what-it-does",
       "summary": "Chaski reacts to graph changes and scheduled deadlines using SELECT focus sets; changes to those sets drive transition handling.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "type": "Concept"
     },
     {
       "kind": "idea",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#incremental-verdict-adapters",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#incremental-verdict-adapters",
       "summary": "Incremental adapters declare subscriptions and route changed subjects to bounded durable key queues; UNKNOWN preserves earlier verdicts rather than asserting recovery.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "type": "Concept"
     },
     {
       "kind": "interface",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#development",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#development",
       "summary": "The distribution chaski-reactor exposes chaski, chaski-event and chaski-once commands. Its offline canary is distinct from live consumer state.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "chaski, chaski-event, chaski-once"
@@ -35,10 +35,10 @@
     },
     {
       "kind": "interface",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#incremental-verdict-adapters",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#incremental-verdict-adapters",
       "summary": "Version-1 JSON adapter requests support discovery, routing and scoped item evaluation; emitter configuration is YAML and durable offsets resume committed work.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "interfaceKind": "file-format",
         "publicName": "Emitter YAML and version-1 adapter JSON"
@@ -46,10 +46,10 @@
     },
     {
       "kind": "interface",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#authenticated-external-event-sources",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#authenticated-external-event-sources",
       "summary": "The local external-event CLI queues authenticated-source events into the existing outbox. Authentication belongs to the caller; this CLI does not expose a network listener.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "interfaceKind": "CLI",
         "publicName": "chaski-event external event admission"
@@ -57,10 +57,10 @@
     },
     {
       "kind": "decision",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#design-constraints",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#design-constraints",
       "summary": "The documented design requires public graph APIs, output liveness, UNKNOWN distinct from all-clear, transition-only writes and existing Prometheus/Alertmanager emission.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "type": "DecisionRecord",
       "properties": {
         "status": "active",
@@ -72,10 +72,10 @@
     },
     {
       "kind": "start-here",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md",
       "summary": "Read the reactor overview and documented boundaries before configuring event or schedule rules.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "startHereOrder": 1,
         "glossaryTerm": "https://scbrown.github.io/quechua/ns#Decision"
@@ -83,20 +83,20 @@
     },
     {
       "kind": "start-here",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#design-constraints",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#design-constraints",
       "summary": "Preserve UNKNOWN and output-liveness boundaries when changing adapters or receivers.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "startHereOrder": 2
       }
     },
     {
       "kind": "start-here",
-      "source": "README.md",
-      "subject": "http://aegis.gastown.local/ontology/doc/chaski/README.md#development",
+      "source": "docs/installation-reference.md",
+      "subject": "http://aegis.gastown.local/ontology/doc/chaski/docs%2Finstallation-reference.md#development",
       "summary": "Run the locked tests and offline canary before adopting a release; source smoke is not live receiver acceptance.",
-      "source_sha256": "26e2c7e10212396c8545ea945228603853336396d725eab8a3dffea8c10a7de0",
+      "source_sha256": "c3ce1e7d38dbddd40ab71c0a030e1c6dfa0e2e108dd1c0f08c7930af298c006e",
       "properties": {
         "startHereOrder": 3
       }

@@ -6,6 +6,7 @@
 
 import importlib.util
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -190,6 +191,20 @@ class Knowledge(unittest.TestCase):
 
     def render(self, lookup=lambda _: "actual-index-label-fixture"):
         return module.render(self.root, "1" * 40, lookup)
+
+    def test_markdown_fragment_witnesses_exist(self):
+        for record in self.registry["records"]:
+            if not record["source"].endswith(".md") or "#" not in record["subject"]:
+                continue
+            fragment = record["subject"].split("#", 1)[1]
+            text = (ROOT / record["source"]).read_text()
+            headings = re.findall(r"^#{1,6} (.+)$", text, re.MULTILINE)
+            anchors = {
+                re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
+                for heading in headings
+            }
+            with self.subTest(source=record["source"], fragment=fragment):
+                self.assertIn(fragment, anchors)
 
     def test_source_bound_nonempty_content(self):
         text = self.render()
