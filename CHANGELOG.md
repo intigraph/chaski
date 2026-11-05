@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/intigraph/chaski/compare/v0.4.0...v0.4.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **pendant:** preserve public policy and stable entity names ([#59](https://github.com/intigraph/chaski/issues/59)) ([200879e](https://github.com/intigraph/chaski/commit/200879e2bada02e5cb53516c2d4dae66f6f7ebe7))
+
 ## [0.4.0](https://github.com/intigraph/chaski/compare/v0.3.0...v0.4.0) (2026-11-05)
 
 
