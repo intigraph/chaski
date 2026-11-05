@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/intigraph/chaski/compare/v0.3.0...v0.4.0) (2026-11-05)
+
+
+### Features
+
+* ship repository-owned pointer pendants ([#34](https://github.com/intigraph/chaski/issues/34)) ([07e027f](https://github.com/intigraph/chaski/commit/07e027f4c76ca0b7defe7740a3eb9767d9906150))
+
+
+### Bug Fixes
+
+* **graph-sink:** expand compact Quipu prefixes before matching recovery reads ([#57](https://github.com/intigraph/chaski/issues/57)) ([14f65b4](https://github.com/intigraph/chaski/commit/14f65b45958ec66e70ee5c565b094a56498d0b28))
+* **share:** pin a private embedding provider for repository builds ([#58](https://github.com/intigraph/chaski/issues/58)) ([f94a8fe](https://github.com/intigraph/chaski/commit/f94a8fe4e1c28d76e6f44c3e9673db07daeab6d6))
+
 ## [0.3.0](https://github.com/intigraph/chaski/compare/v0.2.4...v0.3.0) (2026-11-01)
 
 
