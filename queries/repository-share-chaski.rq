@@ -10,14 +10,23 @@ PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 # into ROOT, so graph/group selectors cannot see it. Keep this predicate list
 # aligned with Bobbin's generate_chunk_turtle output: selecting every outgoing
 # edge also pulls private operational literals into a public release artifact.
-CONSTRUCT { ?s ?p ?o }
+# Public entity identity: the selection below reads the
+# producer store's internal names unchanged; the outer CONSTRUCT republishes
+# every entity under https://w3id.org/intigraph/<repo>/id/ and links each new
+# subject to its old name with owl:sameAs, so stores holding an older pendant
+# keep resolving. Every stack repository uses the same rewrite, so the same
+# thing gets the same public IRI in every pendant. Predicates and classes are
+# vocabulary and are left alone; so are the review-pinned publication-policy
+# rule IRIs that the receiver verifier checks by name.
+CONSTRUCT { ?publicSubject ?p ?publicObject . ?publicSubject owl:sameAs ?formerSubject }
 WHERE {
+{ SELECT ?s ?p ?o WHERE {
   {
     ?s ?p ?o .
     FILTER(
       STRSTARTS(STR(?s), "http://aegis.gastown.local/ontology/code/chaski/") ||
-      STRSTARTS(STR(?s), "http://aegis.gastown.local/ontology/doc/chaski/") ||
-      STRSTARTS(STR(?s), "http://aegis.gastown.local/ontology/chunk/chaski/")
+      STRSTARTS(STR(?s), "http://aegis.gastown.local/ontology/chunk/chaski/") ||
+      STRSTARTS(STR(?s), "http://aegis.gastown.local/ontology/doc/chaski/")
     )
     VALUES ?p {
       rdf:type rdfs:label
@@ -48,6 +57,19 @@ WHERE {
   }
   UNION
   {
+    # The public publication-policy catalogue the receiver verifier requires.
+    # Only reviewed public rule IRIs and their label/regex/tier; a rule IRI that
+    # also appears in the producer's private policy graph is left out entirely,
+    # so a private regex can never ride along and the receiver fails closed.
+    ?s a aegis:InternalIdentifierPattern ; ?p ?o .
+    FILTER(STRSTARTS(STR(?s), "https://quipu.dev/knowledge/publication-policy/"))
+    VALUES ?p { rdf:type rdfs:label aegis:regex aegis:enforcementTier }
+    FILTER NOT EXISTS {
+      GRAPH <urn:quipu:private-release-policy> { ?s ?privatePredicate ?privateValue }
+    }
+  }
+  UNION
+  {
     VALUES ?s {
       aegis:repo_chaski
       aegis:repo-embedded-knowledge-databases-directive-2026-09-03
@@ -73,4 +95,33 @@ WHERE {
     ?o ?targetPredicate ?targetValue .
     FILTER(REGEX(STR(?targetValue), "(^|[^A-Za-z0-9_])aegis-[A-Za-z0-9]"))
   }
+} }
+  BIND(STR(?s) AS ?subjectText)
+  BIND(COALESCE(
+    IF(?subjectText = "http://aegis.gastown.local/ontology/repo_caboodle",
+       <https://w3id.org/intigraph/tambo/id/repo>, ?unmapped),
+    IF(REGEX(?subjectText, "^http://aegis[.]gastown[.]local/ontology/(code|doc|chunk)/[^/]+/"),
+       IRI(REPLACE(?subjectText, "^http://aegis[.]gastown[.]local/ontology/(code|doc|chunk)/([^/]+)/", "https://w3id.org/intigraph/$2/id/$1/")), ?unmapped),
+    IF(REGEX(?subjectText, "^http://aegis[.]gastown[.]local/ontology/repo_[A-Za-z0-9-]+$"),
+       IRI(CONCAT(REPLACE(?subjectText, "^http://aegis[.]gastown[.]local/ontology/repo_", "https://w3id.org/intigraph/"), "/id/repo")), ?unmapped),
+    IF(?subjectText = "http://aegis.gastown.local/ontology/repo-embedded-knowledge-databases-directive-2026-09-03",
+       <https://w3id.org/intigraph/stack/id/repo-embedded-knowledge-databases-directive-2026-09-03>, ?unmapped),
+    IF(STRSTARTS(?subjectText, "https://quipu.dev/knowledge/") && !STRSTARTS(?subjectText, "https://quipu.dev/knowledge/publication-policy/"),
+       IRI(CONCAT("https://w3id.org/intigraph/quipu/id/idea/", STRAFTER(?subjectText, "https://quipu.dev/knowledge/"))), ?unmapped),
+    ?s) AS ?publicSubject)
+  # rdf:type objects are classes, and literals are never identities.
+  BIND(IF(isIRI(?o) && ?p != rdf:type, STR(?o), ?unmapped) AS ?objectText)
+  BIND(COALESCE(
+    IF(?objectText = "http://aegis.gastown.local/ontology/repo_caboodle",
+       <https://w3id.org/intigraph/tambo/id/repo>, ?unmapped),
+    IF(REGEX(?objectText, "^http://aegis[.]gastown[.]local/ontology/(code|doc|chunk)/[^/]+/"),
+       IRI(REPLACE(?objectText, "^http://aegis[.]gastown[.]local/ontology/(code|doc|chunk)/([^/]+)/", "https://w3id.org/intigraph/$2/id/$1/")), ?unmapped),
+    IF(REGEX(?objectText, "^http://aegis[.]gastown[.]local/ontology/repo_[A-Za-z0-9-]+$"),
+       IRI(CONCAT(REPLACE(?objectText, "^http://aegis[.]gastown[.]local/ontology/repo_", "https://w3id.org/intigraph/"), "/id/repo")), ?unmapped),
+    IF(?objectText = "http://aegis.gastown.local/ontology/repo-embedded-knowledge-databases-directive-2026-09-03",
+       <https://w3id.org/intigraph/stack/id/repo-embedded-knowledge-databases-directive-2026-09-03>, ?unmapped),
+    IF(STRSTARTS(?objectText, "https://quipu.dev/knowledge/") && !STRSTARTS(?objectText, "https://quipu.dev/knowledge/publication-policy/"),
+       IRI(CONCAT("https://w3id.org/intigraph/quipu/id/idea/", STRAFTER(?objectText, "https://quipu.dev/knowledge/"))), ?unmapped),
+    ?o) AS ?publicObject)
+  BIND(IF(?publicSubject != ?s, ?s, ?unmapped) AS ?formerSubject)
 }
