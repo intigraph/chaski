@@ -181,5 +181,11 @@ class Publication(unittest.TestCase):
         self.assertEqual(pauses, [30])
 
 
+def load_tests(loader, tests, pattern):
+    provider_tests = load("repository_embedding_controls", ROOT / "test-repository-share-embedding.py")
+    tests.addTests(loader.loadTestsFromModule(provider_tests))
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main()
