@@ -8,6 +8,7 @@ the outbox, so retries, receiver deduplication and write budgets stay shared.
 from __future__ import annotations
 
 import argparse
+from chaski_version import add_version_argument
 import hashlib
 import json
 import os
@@ -66,6 +67,7 @@ def receive(conn, definition: emitter.Emitter, envelope: dict, now: float) -> di
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    add_version_argument(parser, "chaski-event")
     parser.add_argument("--emitters", type=Path, required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--state", type=Path, required=True, help="the existing emitter database")
