@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from importlib import metadata
+from chaski_version import add_version_argument
 import logging
 import re
 import sys
@@ -532,11 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         return demo_main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  epilog="For read-only agent orientation, run: chaski prime")
-    try:
-        installed_version = metadata.version("chaski-reactor")
-    except metadata.PackageNotFoundError:
-        installed_version = "source checkout"
-    ap.add_argument("--version", action="version", version=f"chaski {installed_version}")
+    add_version_argument(ap, "chaski")
     ap.add_argument("--quipu", required=True, help="quipu base URL")
     ap.add_argument("--rules", required=True, type=Path)
     ap.add_argument("--state", required=True, type=Path, help="event cursor file")

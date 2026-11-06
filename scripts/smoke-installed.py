@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-MODULES = ["chaski_prime", "chaski_prime_state", "chaski_primer",
+MODULES = ["chaski_version", "chaski_prime", "chaski_prime_state", "chaski_primer",
            "alertmanager_sink", "change_frames", "change_stream", "chaski", "command_sink", "consumer_lease",
            "demo", "emitter", "external_event", "failure_family_adapter", "graph_sink", "incremental", "once"]
 
@@ -46,9 +46,17 @@ def main():
             or prime.get("version") != metadata.version("chaski-reactor")
             or prime.get("live", {}).get("status") != "skipped"):
         raise RuntimeError("installed prime contract/version differs")
-    version = subprocess.check_output(["chaski", "--version"], text=True).strip()
-    if version != "chaski " + metadata.version("chaski-reactor"):
-        raise RuntimeError("console version differs from wheel metadata")
+    for command in sorted(distribution.entry_points, key=lambda entry: entry.name):
+        if command.group != "console_scripts":
+            continue
+        program = shutil.which(command.name)
+        if not program or not Path(program).is_relative_to(prefix):
+            raise RuntimeError(f"{command.name} is not the installed console script")
+        result = subprocess.run([program, "--version"], capture_output=True, text=True,
+                                check=True, timeout=20)
+        if result.stdout.strip() != command.name + " " + distribution.version or result.stderr:
+            raise RuntimeError(f"{command.name} version differs from wheel metadata")
+    version = "chaski " + distribution.version
     with tempfile.TemporaryDirectory(prefix="chaski-wheel-smoke-") as directory:
         receipt = str(Path(directory) / "demo.json")
         def call(*args):

@@ -22,6 +22,7 @@ merge lane, read read-only by the adapter to order the queue.
 from __future__ import annotations
 
 import argparse
+from chaski_version import add_version_argument
 import json
 import os
 import re
@@ -454,6 +455,7 @@ def _deliver_claimed(req, row, cfg, ledger, items, spawner, now) -> tuple[int, s
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="chaski GitHub work-request receiver")
+    add_version_argument(ap, "chaski-github-work")
     ap.add_argument("--config", required=True, type=Path)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("deliver", help="one chaski event on stdin (the command sink)")

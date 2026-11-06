@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from chaski_version import add_version_argument
 import fcntl
 import hashlib
 import re
@@ -131,6 +132,7 @@ def run_once(config: Path, label: str, state: Path, quipu: str, metrics: Path, w
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_version_argument(parser, "chaski-once")
     parser.add_argument("--emitters", type=Path, required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--state", type=Path, required=True)

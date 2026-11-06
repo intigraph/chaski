@@ -35,6 +35,7 @@ previous verdict. "Could not look" never rounds to "nothing to do".
 from __future__ import annotations
 
 import argparse
+from chaski_version import add_version_argument
 import hashlib
 import json
 import re
@@ -937,6 +938,7 @@ class FixtureFacts:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="chaski GitHub routing adapter (incremental protocol v1)")
+    add_version_argument(ap, "chaski-github-routes")
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--quipu", help="quipu base URL (live reads)")
     ap.add_argument("--fixture", type=Path, help="episodes JSON instead of quipu (offline dry run)")

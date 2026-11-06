@@ -4,6 +4,7 @@
 """
 
 import argparse
+from chaski_version import add_version_argument
 import hashlib
 import json
 import os
@@ -174,6 +175,7 @@ def migrate(db, plan, *, apply=False, backup=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_version_argument(parser, "chaski-state-key-migrate")
     parser.add_argument("--db", required=True)
     plan_input = parser.add_mutually_exclusive_group(required=True)
     plan_input.add_argument("--plan")

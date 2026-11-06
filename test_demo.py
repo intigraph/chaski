@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 
 import chaski
+import chaski_version
 import demo
 
 
@@ -36,7 +37,7 @@ def test_malformed_status_is_unknown_not_an_empty_success(tmp_path, capsys):
 
 
 def test_uninstalled_source_version_does_not_start_a_consumer(capsys):
-    with patch.object(chaski.metadata, "version", side_effect=chaski.metadata.PackageNotFoundError):
+    with patch.object(chaski_version.metadata, "version", side_effect=chaski_version.metadata.PackageNotFoundError):
         try:
             chaski.main(["--version"])
         except SystemExit as result:
