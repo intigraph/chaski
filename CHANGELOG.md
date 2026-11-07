@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/intigraph/chaski/compare/v0.4.1...v0.4.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **cli:** expose read-only versions on helper commands ([#61](https://github.com/intigraph/chaski/issues/61)) ([5a091ef](https://github.com/intigraph/chaski/commit/5a091efc1b4d53acc6c8697b6b77e512265bec7e))
+
 ## [0.4.1](https://github.com/intigraph/chaski/compare/v0.4.0...v0.4.1) (2026-11-05)
 
 
