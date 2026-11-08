@@ -1,0 +1,15 @@
+Readable transcript of a local synthetic QuipuFacts/Adapter probe.
+Namespace rendered as <configured-namespace>; no live server is called.
+Reproduce the paired controls: python -m pytest -q test_github_routes.py -k "known_curie or unknown_curie"
+Base revision and candidate outputs follow. Candidate source is the github_routes.py blob in this commit.
+
+BASE bac260706d9058ff777ef992c4a551fdb0a11798
+a:GitHubRelease => []
+<configured-namespace>/GitHubRelease => ['github:announce:example/project:release/v1.0.0:a:github.release.1', 'github:install:example/project:release/v1.0.0:a:github.release.1']
+a:GitHubIssue => []
+unknown:GitHubRelease => []
+CANDIDATE github_routes.py (same source as paired fixture)
+a:GitHubRelease => ['github:announce:example/project:release/v1.0.0:github.release.1', 'github:install:example/project:release/v1.0.0:github.release.1']
+<configured-namespace>/GitHubRelease => ['github:announce:example/project:release/v1.0.0:github.release.1', 'github:install:example/project:release/v1.0.0:github.release.1']
+a:GitHubIssue => []
+unknown:GitHubRelease => UNKNOWN: unknown compact IRI prefix
