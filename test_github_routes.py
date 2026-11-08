@@ -328,6 +328,37 @@ def test_release_published_requests_install_and_announce_inside_its_window():
     assert decide([pre], published + 60) == {}
 
 
+@pytest.mark.parametrize("compact", [False, True])
+@pytest.mark.parametrize("etype, expected", [
+    ("a:GitHubRelease", True),
+    ("aegis:GitHubRelease", True),
+    (gr.AEGIS + "GitHubRelease", True),
+    ("a:GitHubIssue", False),
+    (gr.AEGIS + "GitHubIssue", False),
+])
+def test_quipu_release_discovery_accepts_known_curie_and_iri_only(etype, expected, compact):
+    """Exercise the real /query normalization and adapter discovery boundary."""
+    now = ts("2026-10-20T22:41:34Z")
+    raw = {"a": gr.AEGIS + "github.activity.release", "kind": "release.published",
+           "at": "2026-10-20T21:41:34Z", "e": gr.AEGIS + "github.release.1",
+           "etype": etype, "tag": "v0.1.3", "pre": False}
+    if compact:
+        raw["a"] = "a:github.activity.release"
+        raw["e"] = "a:github.release.1"
+
+    class RecordedQuipu(gr.QuipuFacts):
+        def _post(self, path, body):
+            assert path == "/query"  # no network or verdict writes
+            return {"rows": [raw] if "?etype" in body["query"] else []}
+
+    cfg = config()
+    facts = RecordedQuipu("https://quipu.example", cfg.graph, cfg.window_days)
+    found = gr.Adapter(cfg, facts).handle({"now": now, "discover": True})
+    want = sorted(gr.item_key(job, REPO, "release/v0.1.3", "github.release.1")
+                  for job in ("install", "announce")) if expected else []
+    assert sorted(found["items"]) == want
+
+
 # ---------------------------------------------------------------- idempotency through chaski's emitter
 
 def emitter_():
@@ -525,3 +556,10 @@ def test_quipu_path_only_trusted_signed_verdicts_count():
     self_review = stored_verdict("self", "lex")
     d, _, _ = quipu_decide([self_review], authors, {self_review["v"]: True})
     assert item not in d
+
+@pytest.mark.parametrize("field", ["etype", "a", "e", "thread"])
+def test_quipu_unknown_curie_is_unknown_not_empty(field):
+    raw = {"etype": "a:GitHubRelease", "e": "a:github.release.1"}
+    raw[field] = "unknown:GitHubRelease"
+    with pytest.raises(gr.FactsUnknown, match="unknown compact IRI prefix"):
+        gr.normalize_row(raw)

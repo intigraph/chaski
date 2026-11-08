@@ -264,8 +264,26 @@ def iso(ts: float | None) -> str | None:
     return None if ts is None else datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def expand_ref(value):
+    """Canonicalize Quipu's known compact IRIs before comparisons or keys.
+
+    Match graph_sink's legacy aegis prefix aliases. Unknown compact prefixes
+    cannot be interpreted safely: an incomplete snapshot must remain UNKNOWN.
+    Full HTTP(S)/URN references and unqualified fixture values are unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    for prefix in ("aegis:", "a:"):
+        if value.startswith(prefix):
+            return AEGIS + value[len(prefix):]
+    if ":" in value and not value.startswith(("http://", "https://", "urn:")):
+        raise FactsUnknown("unknown compact IRI prefix")
+    return value
+
+
 def local(value) -> str | None:
-    """The local name of an IRI (or the literal itself)."""
+    """The local name of a known compact/full IRI (or the literal itself)."""
+    value = expand_ref(value)
     if value is None:
         return None
     text = str(value)
@@ -304,7 +322,7 @@ def normalize_row(raw: dict) -> dict:
         row[k] = _intv(row[k])
     row["etype"] = local(row["etype"])
     for k in ("a", "e", "thread"):
-        row[k] = None if row[k] is None else str(row[k])
+        row[k] = None if row[k] is None else str(expand_ref(row[k]))
     for k in ("kind", "at", "actor", "sha", "state", "base", "status", "conclusion", "review", "author", "name",
               "tag", "url"):
         row[k] = None if row[k] is None else str(row[k])
@@ -444,7 +462,7 @@ class QuipuFacts:
         for r in self._rows(author_query(self.graph, repo)):
             agent = local(r.get("agent"))
             if r.get("pr") and agent:
-                authors.setdefault(str(r["pr"]), set()).add(agent.lower())
+                authors.setdefault(str(expand_ref(r["pr"])), set()).add(agent.lower())
         # Two declared author agents is ambiguous: the PR has NO author agent
         # (never "whichever one a verdict names"), so it is never approved.
         return Snapshot(rows, verdicts, {pr: next(iter(a)) if len(a) == 1 else AMBIGUOUS
