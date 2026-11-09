@@ -211,6 +211,53 @@ Each delivered transaction must match both values before inbox or cursor changes
 commit. Missing identity, a replaced store or a new epoch refuses admission;
 restoring transport is not authority to adopt a new source. This source change
 does not execute the transition on an installed consumer.
+
+#### Check an upgrade before changing the active release
+
+Run the staged candidate's `--check-change-source identity.json` mode before
+changing the active release link or restarting the serving consumer. Pass the
+usual `--quipu`, `--rules`, `--state` and `--emitter-db` arguments. This mode
+does not read rules, contact a server, acquire consumer leases or initialize
+storage. It opens the existing inbox read-only and checks its cursor and source
+binding in one SQLite read transaction. It can therefore run while the old
+consumer continues to hold both leases.
+
+Exit 0 and `{"status":"READY","cursor":N,"binding_matches":true}` mean
+the stored binding matches the supplied file at that snapshot. They do not
+authenticate the file's origin, verify the server's current identity, authorize
+a transition or prove downstream delivery. Refusals exit 2 with a bounded JSON
+reason, including `source_unbound`, `source_mismatch` or `cursor_invalid`.
+An upgrade must stop before changing the active link when this check refuses;
+it must leave the old consumer serving. Do not make normal deployment bind an
+unbound source automatically.
+
+For an unbound predecessor, the separately reviewed maintenance sequence is:
+
+1. Qualify the candidate and the existing transition command against a fixture
+   produced by the predecessor, including pending inbox/outbox/deadline rows.
+   Rehearse candidate startup and return to the old release while retaining all
+   state. Merely importing the candidate does not exercise this precondition.
+2. Independently verify the exact source store and log epoch through the
+   authenticated reader route. Protect the two-field identity file and retain
+   its provenance in the admission packet. Do not infer identity from a URL,
+   a transaction number or an empty response.
+3. At the admitted stopped-consumer boundary, confirm the primary has ended
+   and read the exact existing durable SQLite cursor. Invoke the staged,
+   reviewed candidate with `--bind-change-source identity.json` and
+   `--expected-change-cursor N`, using the normal state and inbox paths. The
+   command holds both leases and refuses a changed cursor, a different existing
+   binding or a missing inbox. Do not delete, replay or bootstrap the inbox.
+4. Run the read-only check again and compare retained state with the before
+   snapshot. End the maintenance boundary by restoring the previously serving
+   consumer. Subsequent candidate adoption needs its own normal admission and
+   preflight; an earlier READY snapshot is not a later deployment authority.
+
+Rollback restores the predecessor's complete runtime manifest and pin together.
+Retain the source binding as well as the cursor and queues; rollback is not
+permission to remove or replace a binding. A store or epoch mismatch needs a
+new reviewed disposition. No command in this section grants live maintenance
+authority or bypasses the deployment window and reservation gates.
+
 The reader queues one complete frame and waits for the reactor thread to commit
 both routed inbox records and the cursor before accepting another. The reactor drains up to64 pages in a50ms burst
 (budget checked between commits), then gives adapters/deadlines their turn.

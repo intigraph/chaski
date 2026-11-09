@@ -546,11 +546,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="GLOBAL minimum seconds between sink writes, across all emitters")
     ap.add_argument("--changes-stream", action=argparse.BooleanOptionalAction, default=True,
                     help="use committed transaction stream (default); requires existing durable cursor")
-    ap.add_argument("--bind-change-source", type=Path,
-                    help="explicit local transition: protected store_id/log_epoch JSON")
+    source_mode = ap.add_mutually_exclusive_group()
+    source_mode.add_argument("--bind-change-source", type=Path,
+                             help="explicit local transition: protected store_id/log_epoch JSON")
+    source_mode.add_argument("--check-change-source", type=Path,
+                             help="read-only preflight against protected store_id/log_epoch JSON")
     ap.add_argument("--expected-change-cursor", type=int,
                     help="exact existing cursor for the reviewed source-binding transition")
     args = ap.parse_args(argv)
+    if args.check_change_source is not None:
+        if args.expected_change_cursor is not None or args.once:
+            ap.error('source preflight cannot bind a cursor or evaluate rules')
+        return _check_consumer_source(
+            args.emitter_db or args.state.with_name("emitter.db"), args.check_change_source)
     if args.bind_change_source is not None:
         if args.expected_change_cursor is None or args.once:
             ap.error('source binding requires an exact cursor and cannot evaluate rules')
@@ -572,6 +580,61 @@ def main(argv: list[str] | None = None) -> int:
     except ConsumerLeaseError as exc:
         LOG.error("%s", exc)
         return 2
+
+
+def _check_consumer_source(inbox, identity_file):
+    """Read existing custody without leases, initialization, rules or network."""
+    import sqlite3
+    from incremental import _source_identity
+    from emitter import ProtocolError
+
+    def refuse(reason):
+        print(json.dumps({'status': 'REFUSED', 'reason': reason}))
+        return 2
+
+    try:
+        with identity_file.open('rb') as file:
+            raw = file.read(4097)
+    except OSError:
+        return refuse('identity_unreadable')
+    if len(raw) > 4096:
+        return refuse('identity_exceeds_budget')
+    try:
+        expected = _source_identity(json.loads(raw))
+    except (ValueError, UnicodeError, ProtocolError):
+        return refuse('identity_invalid')
+    if not inbox.is_file():
+        return refuse('missing_inbox')
+    try:
+        conn = sqlite3.connect(inbox.resolve().as_uri() + '?mode=ro', uri=True,
+                               timeout=2, isolation_level=None)
+        try:
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            row = conn.execute('SELECT tx FROM change_cursor WHERE id=1').fetchone()
+            if row is None or type(row[0]) is not int or not 0 <= row[0] <= 9223372036854775807:
+                return refuse('cursor_invalid')
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_source'").fetchone()
+            if not exists:
+                return refuse('source_unbound')
+            # A read transaction keeps cursor and identity on one snapshot;
+            # two rows suffice to refuse any ambiguous binding.
+            rows = conn.execute('SELECT store_id,log_epoch FROM change_source LIMIT 2').fetchall()
+            if len(rows) != 1:
+                return refuse('source_ambiguous')
+            try:
+                bound = _source_identity(dict(zip(('store_id', 'log_epoch'), rows[0])))
+            except ProtocolError:
+                return refuse('source_invalid')
+            if bound != expected:
+                return refuse('source_mismatch')
+            print(json.dumps({'status': 'READY', 'cursor': row[0], 'binding_matches': True}))
+            return 0
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
+        return refuse('inbox_unreadable')
 
 
 def _bind_consumer_source(args, inbox):
