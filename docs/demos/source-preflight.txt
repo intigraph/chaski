@@ -1,0 +1,6 @@
+unbound predecessor: {"status": "REFUSED", "reason": "source_unbound"}
+bind while primary owns custody: REFUSED before reading rules
+explicit offline fixture transition: {"status": "BOUND", "cursor": 10}
+preflight while primary owns custody: {"status": "READY", "cursor": 10, "binding_matches": true}
+wrong expected epoch: {"status": "REFUSED", "reason": "source_mismatch"}
+retained: cursor=10, inbox=1, deadline=1, original binding unchanged
