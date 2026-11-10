@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/intigraph/chaski/compare/v0.4.2...v0.5.0) (2026-11-09)
+
+
+### Features
+
+* **consumer:** add read-only source binding preflight ([#65](https://github.com/intigraph/chaski/issues/65)) ([1de946a](https://github.com/intigraph/chaski/commit/1de946ac7b2fa2873a010491a3af2bfe6f3bf4be))
+
+
+### Bug Fixes
+
+* **github:** normalize compact references before routing ([#63](https://github.com/intigraph/chaski/issues/63)) ([a65caf8](https://github.com/intigraph/chaski/commit/a65caf85b593818a05329df522817dab9362bb00))
+
 ## [0.4.2](https://github.com/intigraph/chaski/compare/v0.4.1...v0.4.2) (2026-11-06)
 
 
