@@ -35,6 +35,9 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    # Explicit, not inherited: release.yml's notify-tap is the only notifier.
+    secrets:
+      HOMEBREW_TAP_DISPATCH_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
     permissions:
       contents: write
       id-token: write
