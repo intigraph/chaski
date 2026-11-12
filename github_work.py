@@ -94,10 +94,26 @@ def parse_request(event: dict, cfg: gr.Config) -> dict:
         raise RequestError("request fields disagree with its item key")
     if repo not in cfg.repos:
         raise RequestError(f"{repo} is not a configured repository")
+    if kind in {"conflict", "merge-stalled"} and not cfg.repos[repo].stale_prs_enabled:
+        raise RequestError("stale PR route is disabled")
     facts = req.get("facts")
     if not isinstance(facts, dict):
         raise RequestError("request has no facts")
+    if kind in {'conflict', 'merge-stalled'} or req.get('route') == 'crew':
+        if facts.get('head_sha') != revision:
+            raise RequestError("PR flow request without its exact head sha")
     route = "administrator" if kind == "outside-contribution" else "spawn"
+    if kind in ("conflict", "merge-stalled"):
+        route = "administrator"  # named crew work, never an ephemeral job
+    if kind == "conflict":
+        flow = facts.get("flow") or {}
+        owner = req.get("assignee")
+        if (not isinstance(owner, str) or not gr.LOGIN.fullmatch(owner)
+                or owner != flow.get("author_agent") or flow.get("state") != "conflicting"
+                or flow.get("mergeable") is not False or flow.get("mergeable_state") != "dirty"):
+            raise RequestError("conflict request lacks its declared author and exact conflict observation")
+    elif "assignee" in req:
+        raise RequestError("only a conflict request selects a declared author")
     if kind == "merge":
         # Defence in depth: the adapter never emits a merge for an outside
         # author, and the receiver refuses to be the one that does.
@@ -106,9 +122,17 @@ def parse_request(event: dict, cfg: gr.Config) -> dict:
             req["note"] = "outside author: routed to the administrator, never merged"
         if not gr.SHA.match(str(facts.get("head_sha", ""))) or facts.get("head_sha") != revision:
             raise RequestError("merge request without its exact head sha")
-    if req.get("route") not in ("spawn", "administrator"):
-        raise RequestError("request route is not spawn or administrator")
-    req["route"] = "administrator" if "administrator" in (route, req["route"]) else "spawn"
+    if req.get("route") == "crew":
+        if kind != "review" or (cfg.raw.get("crew_reviews") or {}).get("enabled") is not True:
+            raise RequestError("crew review route is not enabled")
+        if (facts.get("ci", {}).get("state") != "green"
+                or not isinstance(facts.get("approval", {}).get("author_agent"), str)
+                or not gr.LOGIN.fullmatch(facts["approval"]["author_agent"])):
+            raise RequestError("crew review requires green head and declared author")
+    elif req.get("route") not in ("spawn", "administrator"):
+        raise RequestError("unknown request route")
+    req["route"] = ("administrator" if "administrator" in (route, req["route"])
+                    else "crew" if req["route"] == "crew" else "spawn")
     return req
 
 
@@ -131,9 +155,18 @@ class Ledger:
         self.conn.executescript(LEDGER_SCHEMA)
         if "claimed_until" not in {r[1] for r in self.conn.execute("PRAGMA table_info(requests)")}:
             self.conn.execute("ALTER TABLE requests ADD COLUMN claimed_until REAL")
+        if "recipient" not in {r[1] for r in self.conn.execute("PRAGMA table_info(requests)")}:
+            self.conn.execute("ALTER TABLE requests ADD COLUMN recipient TEXT")
 
     def close(self):
         self.conn.close()
+
+    def recipient(self, rid, selected=None):
+        if selected is not None:
+            self.conn.execute("UPDATE requests SET recipient=? WHERE request_id=? AND recipient IS NULL",
+                              (selected, rid))
+        row = self.conn.execute("SELECT recipient FROM requests WHERE request_id=?", (rid,)).fetchone()
+        return row[0] if row else None
 
     def get(self, rid: str) -> dict | None:
         row = self.conn.execute("SELECT request_id,item,kind,repo,state,work_item,attempts,detail FROM requests "
@@ -253,6 +286,40 @@ def _run(argv: list[str], env: dict | None = None, timeout: float = 120.0) -> su
                           env={**os.environ, **(env or {})})
 
 
+def review_recipient(observation, author, expected_sdk, now, request_id, reviewers):
+    """Fresh bounded routing advice for a NEW queued item, never execution authority."""
+    if (not isinstance(observation, dict) or observation.get("version") != 1
+            or observation.get("scope") != "review-routing" or observation.get("complete") is not True
+            or observation.get("routing_held") is not False
+            or observation.get("delivery_sdk_sha256") != expected_sdk
+            or type(observation.get("quipu_reads")) is not int
+            or not 0 <= observation["quipu_reads"] <= 6 or observation.get("quipu_408s") != 0):
+        raise Refused("bounded review routing evidence unavailable")
+    at = gr.epoch(observation.get("observed_at"))
+    if at is None or not 0 <= now - at <= 90:
+        raise Refused("review routing evidence is stale or future")
+    agents = observation.get("agents")
+    if not isinstance(agents, list) or not 1 <= len(agents) <= 64:
+        raise Refused("review routing roster outside bound")
+    names, eligible = set(), []
+    for row in agents:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not gr.LOGIN.fullmatch(row["name"]):
+            raise Refused("review routing identity unknown")
+        name = row["name"]
+        if name in names:
+            raise Refused("ambiguous review routing identity")
+        names.add(name)
+        if (name in reviewers and name.lower() != author.lower() and row.get("available") is True
+                and row.get("assignment_checked") is True
+                and row.get("state") == "up" and row.get("work") == "idle"
+                and row.get("harness") in ("codex", "claude")):
+            eligible.append(name)
+    if not eligible:
+        raise Refused("no free non-author reviewer observed")
+    eligible.sort()
+    return eligible[int(request_id[:16], 16) % len(eligible)]
+
+
 def item_title(req: dict) -> str:
     f = req["facts"]
     if req["subject"].startswith("pr/"):
@@ -265,9 +332,12 @@ def item_title(req: dict) -> str:
 
 
 def item_body(req: dict) -> str:
+    reporting = ("Use the normal crew dispatch and item evidence path."
+                 if req.get('route') in {'crew', 'administrator'} else
+                 "Report through `st agent spawn --report`.")
     return ("Work request filed by chaski's GitHub routing rules (aegis-c01c.4).\n"
             "The JSON below is the handoff contract (chaski docs/github-routing.md): the job works on\n"
-            "exactly `revision` (the head sha for PR jobs) and reports through `st agent spawn --report`.\n\n"
+            "exactly `revision` (the head sha for PR jobs). " + reporting + "\n\n"
             "```json\n" + json.dumps(req, indent=1, sort_keys=True) + "\n```\n")
 
 
@@ -298,7 +368,7 @@ class SeedsItems:
         labels = [*self.labels, dedupe_label(req["request_id"]), f"job:{req['kind']}"]
         url = req["facts"].get("url")
         argv = [*self.prefix, "create", "--title", item_title(req), "-d", item_body(req), "-l", ",".join(labels),
-                "-p", self.priority, "-a", self.administrator, "--silent"]
+                "-p", self.priority, "-a", req.get("assignee", self.administrator), "--silent"]
         if url:
             argv += ["--external-ref", url]
         if self.parent:
@@ -430,14 +500,33 @@ def _deliver_claimed(req, row, cfg, ledger, items, spawner, now) -> tuple[int, s
             ledger.upsert(req, "spent", now, detail=str(exc))
             return 0, str(exc)
     try:
+        if req["route"] == "crew":
+            recipient = ledger.recipient(rid)
+            if recipient is None:
+                conf = cfg.raw["crew_reviews"]
+                response = _run([conf.get("st_bin", "st"), "crew", "--review-routing", "--local", "--json"],
+                                timeout=30)
+                if response.returncode:
+                    raise Refused("bounded crew review profile failed")
+                try:
+                    observation = json.loads(response.stdout)
+                except ValueError:
+                    raise Refused("bounded crew review profile malformed") from None
+                recipient = review_recipient(observation, req["facts"]["approval"]["author_agent"],
+                                             conf["sdk_sha256"], now, rid, conf["reviewers"])
+                # Reserve the recipient before item creation. A crash or a
+                # later busy snapshot cannot reroute the same request.
+                recipient = ledger.recipient(rid, recipient)
+            req = {**req, "assignee": recipient}
         work_item = (row or {}).get("work_item") or items.find(req)
         if not work_item:
             ledger.upsert(req, "filing", now)
             work_item = items.create(req)
         ledger.upsert(req, "filed", now, work_item=work_item)
-        if req["route"] == "administrator":
-            ledger.upsert(req, "routed", now, work_item=work_item, detail=f"assigned to {cfg.administrator}")
-            return 0, f"routed {rid[:12]} to {cfg.administrator} as {work_item}"
+        if req["route"] in ("administrator", "crew"):
+            assignee = req.get("assignee", cfg.administrator)
+            ledger.upsert(req, "routed", now, work_item=work_item, detail=f"assigned to {assignee}")
+            return 0, f"routed {rid[:12]} to {assignee} as {work_item}"
         ok, detail = spawner.spawn(req, work_item)
     except (Refused, OSError, subprocess.TimeoutExpired, ValueError) as exc:
         if holds_lane:

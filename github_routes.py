@@ -38,9 +38,11 @@ import argparse
 from chaski_version import add_version_argument
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -51,7 +53,7 @@ import yaml
 AEGIS = "http://aegis.gastown.local/ontology/"
 SCHEMA = "chaski.github.work-request/v1"
 WAIT, READY = "WAIT", "READY"
-KINDS = ("review", "merge", "outside-contribution", "triage", "install", "announce")
+KINDS = ("review", "merge", "outside-contribution", "triage", "install", "announce", "conflict", "merge-stalled")
 RELEASE_JOBS = ("install", "announce")
 GREEN = {"success", "skipped", "neutral"}
 RED = {"failure", "timed_out", "startup_failure", "cancelled_by_failure"}
@@ -88,6 +90,7 @@ DEFAULTS = {
     "approval_sources": ["verdict"],
     "merge": {"enabled": True, "spacing_minutes": 10, "lease_minutes": 75},
     "triage": {"enabled": True},
+    "stale_prs": {"enabled": False, "approved_after_minutes": 120},
     "release": {"jobs": list(RELEASE_JOBS), "include_prereleases": False, "window_hours": 24},
 }
 
@@ -106,6 +109,8 @@ class RepoConfig:
     release_jobs: tuple[str, ...]
     include_prereleases: bool
     release_window_s: int
+    stale_prs_enabled: bool = False
+    approved_after_s: int = 7200
 
 
 @dataclass
@@ -148,8 +153,23 @@ def load_config(path: Path | str) -> Config:
 def parse_config(doc: dict) -> Config:
     if not isinstance(doc, dict) or doc.get("version") != 1:
         raise ConfigError("config needs version: 1")
+    crew = doc.get("crew_reviews") or {}
+    if (not isinstance(crew, dict) or set(crew) - {"enabled", "sdk_sha256", "st_bin", "reviewers"}
+            or type(crew.get("enabled", False)) is not bool):
+        raise ConfigError("crew_reviews requires an explicit boolean enabled flag")
+    if crew.get("enabled") and not re.fullmatch(r"[0-9a-f]{64}", str(crew.get("sdk_sha256", ""))):
+        raise ConfigError("crew reviews require an admitted routing SDK digest")
+    if crew.get("enabled"):
+        reviewers = crew.get("reviewers")
+        if (not isinstance(reviewers, list) or not reviewers or len(reviewers) > 64
+                or any(not isinstance(r, str) or not LOGIN.fullmatch(r) for r in reviewers)
+                or len(set(reviewers)) != len(reviewers)):
+            raise ConfigError("crew reviews require an explicitly admitted reviewer pool")
+    if "st_bin" in crew and (not isinstance(crew["st_bin"], str) or not crew["st_bin"]
+                             or any(c in crew["st_bin"] for c in ('\0', '\n', '\r'))):
+        raise ConfigError("crew review st_bin must name one executable")
     known = {"version", "graph", "administrator", "members", "ledger", "window_days", "defaults", "repos",
-             "work_items", "spawner", "review_predicate"}
+             "work_items", "spawner", "review_predicate", "crew_reviews"}
     if set(doc) - known:
         raise ConfigError(f"unknown top-level field(s) {sorted(set(doc) - known)}")
     graph = doc.get("graph")
@@ -211,6 +231,7 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
     if not isinstance(jobs, list) or any(j not in RELEASE_JOBS for j in jobs):
         raise ConfigError(f"{key}.release.jobs must be a subset of {list(RELEASE_JOBS)}")
     for flag, value in (("merge.enabled", d["merge"]["enabled"]), ("triage.enabled", d["triage"]["enabled"]),
+                        ("stale_prs.enabled", d["stale_prs"]["enabled"]),
                         ("release.include_prereleases", d["release"]["include_prereleases"])):
         if type(value) is not bool:
             raise ConfigError(f"{key}.{flag} must be true or false")
@@ -223,7 +244,10 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
         merge_enabled=d["merge"]["enabled"], spacing_s=60 * spacing, lease_s=60 * lease,
         triage_enabled=d["triage"]["enabled"], release_jobs=tuple(jobs),
         include_prereleases=d["release"]["include_prereleases"],
-        release_window_s=3600 * _int(d["release"]["window_hours"], f"{key}.release.window_hours", 1, 720))
+        release_window_s=3600 * _int(d["release"]["window_hours"], f"{key}.release.window_hours", 1, 720),
+        stale_prs_enabled=d["stale_prs"]["enabled"],
+        approved_after_s=60 * _int(d["stale_prs"]["approved_after_minutes"],
+                                   f"{key}.stale_prs.approved_after_minutes", 1, 10080))
 
 
 # --------------------------------------------------------------------------- keys
@@ -310,13 +334,14 @@ def _intv(value):
 
 
 ROW_FIELDS = ("a", "kind", "at", "actor", "sha", "state", "merged", "draft", "base", "status", "conclusion",
-              "attempt", "review", "pre", "e", "etype", "num", "author", "name", "tag", "url", "thread", "tnum")
+              "attempt", "review", "pre", "e", "etype", "num", "author", "name", "tag", "url", "thread", "tnum",
+              "mergeable", "mergeable_state", "base_sha", "created")
 
 
 def normalize_row(raw: dict) -> dict:
     """One activity joined with the entity it is about, typed."""
     row = {k: raw.get(k) for k in ROW_FIELDS}
-    for k in ("merged", "draft", "pre"):
+    for k in ("merged", "draft", "pre", "mergeable"):
         row[k] = _bool(row[k])
     for k in ("attempt", "num", "tnum"):
         row[k] = _intv(row[k])
@@ -324,7 +349,7 @@ def normalize_row(raw: dict) -> dict:
     for k in ("a", "e", "thread"):
         row[k] = None if row[k] is None else str(expand_ref(row[k]))
     for k in ("kind", "at", "actor", "sha", "state", "base", "status", "conclusion", "review", "author", "name",
-              "tag", "url"):
+              "tag", "url", "mergeable_state", "base_sha", "created"):
         row[k] = None if row[k] is None else str(row[k])
     if row["review"]:
         row["review"] = row["review"].lower()
@@ -369,12 +394,15 @@ def activity_query(graph: str, repo: str, since: str) -> str:
         ("githubActorLogin", "actor"), ("commitSha", "sha"), ("githubState", "state"),
         ("githubMerged", "merged"), ("githubDraft", "draft"), ("githubBaseRef", "base"),
         ("githubStatus", "status"), ("githubConclusion", "conclusion"), ("githubRunAttempt", "attempt"),
-        ("reviewState", "review"), ("githubPrerelease", "pre")))
+        ("reviewState", "review"), ("githubPrerelease", "pre"),
+        ("githubMergeable", "mergeable"), ("githubMergeableState", "mergeable_state"),
+        ("githubBaseSha", "base_sha")))
     eopt = "".join(f" OPTIONAL {{ ?e aegis:{p} ?{v} }}" for p, v in (
         ("githubNumber", "num"), ("githubAuthorLogin", "author"), ("githubName", "name"),
-        ("githubTagName", "tag"), ("githubUrl", "url")))
+        ("githubTagName", "tag"), ("githubUrl", "url"), ("githubCreatedAt", "created")))
     return ("PREFIX aegis: <%s> SELECT ?a ?kind ?at ?actor ?sha ?state ?merged ?draft ?base ?status "
             "?conclusion ?attempt ?review ?pre ?e ?etype ?num ?author ?name ?tag ?url ?thread ?tnum "
+            "?mergeable ?mergeable_state ?base_sha ?created "
             "WHERE { GRAPH <%s> { ?repo aegis:githubFullName %s . "
             "?a a aegis:GitHubActivity ; aegis:inGitHubRepository ?repo ; aegis:githubEventKind ?kind ; "
             "aegis:occurredAt ?at ; aegis:aboutGitHubEntity ?e . FILTER(STR(?at) >= %s) "
@@ -501,6 +529,8 @@ def rows_from_episodes(episodes: list[dict]) -> list[dict]:
                 "a": AEGIS + n["name"], "kind": p.get("githubEventKind"), "at": p.get("occurredAt"),
                 "actor": p.get("githubActorLogin"), "sha": p.get("commitSha"), "state": p.get("githubState"),
                 "merged": p.get("githubMerged"), "draft": p.get("githubDraft"), "base": p.get("githubBaseRef"),
+                "mergeable": p.get("githubMergeable"), "mergeable_state": p.get("githubMergeableState"),
+                "base_sha": p.get("githubBaseSha"), "created": sp.get("githubCreatedAt"),
                 "status": p.get("githubStatus"), "conclusion": p.get("githubConclusion"),
                 "attempt": p.get("githubRunAttempt"), "review": p.get("reviewState"),
                 "pre": p.get("githubPrerelease"), "e": AEGIS + subject["name"], "etype": AEGIS + subject["type"],
@@ -613,7 +643,9 @@ def _prs(rows: list[dict]) -> dict[str, dict]:
         head_since = min(a["ts"] for a in acts if a["sha"] == head)
         out[iri] = {"iri": iri, "number": last["num"], "author": last["author"], "url": last["url"],
                     "state": last["state"], "merged": bool(last["merged"]), "draft": bool(draft), "head": head,
-                    "base": last["base"], "head_since": head_since, "last_at": last["ts"], "last_kind": last["kind"]}
+                    "base": last["base"], "head_since": head_since, "last_at": last["ts"], "last_kind": last["kind"],
+                    "mergeable": last["mergeable"], "mergeable_state": last["mergeable_state"],
+                    "base_sha": last["base_sha"], "activity": last["a"], "created_at": epoch(last["created"])}
     return out
 
 
@@ -683,7 +715,9 @@ def approval(pr: dict, snap: Snapshot, gh_reviews: list[dict], sources: tuple[st
     approvals = [w for w in words.values() if w["verdict"] == "approve"]
     blocking = [w for w in words.values() if w["verdict"] == "changes"]
     approved = bool(approvals) and not blocking
-    return {"approved": approved, "reviewed": bool(reviewed),
+    first_review_at = min((w["ts"] for w in reviewed
+                           if author_agent is not None and w["ts"] >= pr["head_since"]), default=None)
+    return {"approved": approved, "reviewed": bool(reviewed), "first_review_at": first_review_at,
             "approved_at": max((w["ts"] for w in approvals), default=None) if approved else None,
             "approvals": [{"by": w["by"], "source": w["source"], "at": w["at"], "record": w["v"]} for w in approvals],
             "blocking": [{"by": w["by"], "source": w["source"], "at": w["at"], "record": w["v"]} for w in blocking],
@@ -699,6 +733,64 @@ def _pr_facts(repo: str, pr: dict, ci: dict, appr: dict | None = None) -> dict:
         facts["approval"] = {k: appr[k] for k in ("approvals", "blocking", "author_agent")}
         facts["approval"]["approved_at"] = iso(appr["approved_at"])
     return facts
+
+
+def pr_flow(pr: dict, ci: dict, appr: dict, now: float) -> dict:
+    """One read-time state judgment shared by deadlines and the brief."""
+    state, since, who = "pending", pr["head_since"], None
+    if pr["draft"]:
+        state, since, who = "draft", pr["last_at"], appr["author_agent"]
+    elif pr["mergeable"] is False and pr["mergeable_state"] == "dirty":
+        state, since, who = "conflicting", pr["last_at"], appr["author_agent"]
+    elif ci["state"] == "red":
+        state, who = "red", appr["author_agent"]
+        since = min((epoch(c["at"]) for c in ci["checks"]
+                     if c["conclusion"] in RED and epoch(c["at"]) is not None), default=since)
+    elif appr["approved"] and ci["state"] == "green":
+        state, since, who = "approved", max(pr["head_since"], ci["green_at"], appr["approved_at"]), "queue-owner"
+    elif not appr["reviewed"] and ci["state"] == "green":
+        state, since, who = "needs-review", max(ci["green_at"], pr["head_since"]), "non-author-reviewer"
+    elif appr["blocking"]:
+        state, who = "changes-requested", appr["author_agent"]
+    elif ci["state"] == "none":
+        state = "UNKNOWN"
+    return {"state": state, "since": iso(since), "age_seconds": max(0, now - since),
+            "first_review_at": iso(appr["first_review_at"]),
+            "observed_head_to_first_review_seconds": (
+                appr["first_review_at"] - pr["head_since"] if appr["first_review_at"] is not None else None),
+            "who_must_act": who, "author_agent": appr["author_agent"],
+            "source_activity": pr["activity"], "source_observed_at": iso(pr["last_at"]),
+            "mergeable": pr["mergeable"], "mergeable_state": pr["mergeable_state"],
+            "base_sha": pr["base_sha"]}
+
+
+def flow_summary(cfg: Config, snapshots: dict[str, Snapshot], now: float) -> dict:
+    """Bounded observed PR states, not a second workflow engine or a live census."""
+    records, counts, unknown = [], {}, []
+    for repo in sorted(cfg.repos):
+        snap = snapshots.get(repo)
+        if snap is None or not _prs(snap.rows):
+            unknown.append(repo)
+            continue
+        reviews = _github_reviews(snap.rows)
+        for pr in _prs(snap.rows).values():
+            if pr["state"] != "open":
+                continue
+            ci = ci_state(snap.rows, pr["head"], cfg.repos[repo].required_checks)
+            appr = approval(pr, snap, reviews.get(pr["number"], []), cfg.repos[repo].approval_sources)
+            flow = pr_flow(pr, ci, appr, now)
+            counts[flow["state"]] = counts.get(flow["state"], 0) + 1
+            records.append({"repo": repo, "pr": pr["number"], "head": pr["head"], "url": pr["url"], **flow})
+    return {"schema": "chaski.github.pr-flow/v1", "checked_at": iso(now), "graph": cfg.graph,
+            "scope": {"repos": sorted(cfg.repos), "window_days": cfg.window_days,
+                      "basis": "observed activity window, not a complete current-PR census"},
+            "state": "UNKNOWN" if unknown else "observed", "unknown_repos": unknown,
+            "counts": counts if not unknown else None,
+            "oldest_age_seconds": max((r["age_seconds"] for r in records), default=None),
+            "records": records,
+            "metrics": {"main_only_repushes": None, "time_to_first_review_seconds": None,
+                        "reason": ("requires complete historical review and verified "
+                                   "unchanged-proposal refresh evidence")}}
 
 
 def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[LaneRow],
@@ -720,9 +812,20 @@ def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[
         ci = ci_state(rows, pr["head"], repo_cfg.required_checks)
         appr = approval(pr, snap, gh.get(pr["number"], []), repo_cfg.approval_sources)
         subject = f"pr/{pr['number']}"
+        flow = pr_flow(pr, ci, appr, now)
+        if repo_cfg.stale_prs_enabled:
+            if flow["state"] == "conflicting":
+                facts = {**_pr_facts(repo, pr, ci, appr), "flow": flow}
+                put("conflict", subject, pr["head"], READY if flow["author_agent"] else WAIT, None, facts)
+            elif flow["state"] == "approved":
+                due = max(pr["head_since"], ci["green_at"], appr["approved_at"]) + repo_cfg.approved_after_s
+                put("merge-stalled", subject, pr["head"], READY if now >= due else WAIT,
+                    None if now >= due else due, {**_pr_facts(repo, pr, ci, appr), "flow": flow})
+        if repo_cfg.stale_prs_enabled and flow["state"] == "conflicting":
+            continue  # never schedule review/merge work for a known conflict
         # (a) review
         if not appr["reviewed"]:
-            facts = _pr_facts(repo, pr, ci)
+            facts = _pr_facts(repo, pr, ci, appr)
             if ci["state"] == "green":
                 start = max(ci["green_at"], pr["head_since"])
                 due = start + repo_cfg.review_after_s
@@ -844,11 +947,16 @@ def _merge_lane(cfg, repo_cfg, prs, candidates, lane, rows, now, put):
 def record_for(cfg: Config, d: Decision) -> dict:
     rid = request_id(d.item)
     kind, repo, subject, revision = parse_item(d.item)
+    direct = kind in ("outside-contribution", "conflict", "merge-stalled")
+    assignee = d.facts.get("flow", {}).get("author_agent") if kind == "conflict" else cfg.administrator
     request = {"schema": SCHEMA, "request_id": rid, "item": d.item, "kind": kind, "repo": repo,
                "subject": subject, "revision": revision,
-               "route": "administrator" if kind == "outside-contribution" else "spawn",
+               "route": ("crew" if kind == "review" and (cfg.raw.get("crew_reviews") or {}).get("enabled")
+                         else "administrator" if direct else "spawn"),
                "administrator": cfg.administrator, "facts": d.facts}
-    rec = {"item": d.item, "verdict": d.verdict, "work_kind": kind, "assignee": cfg.administrator,
+    if kind == "conflict":
+        request["assignee"] = assignee
+    rec = {"item": d.item, "verdict": d.verdict, "work_kind": kind, "assignee": assignee,
            "evidence": json.dumps(request, sort_keys=True, separators=(",", ":"))}
     if d.verdict == READY:
         rec["event_id"] = rid
@@ -954,16 +1062,40 @@ class FixtureFacts:
         return out
 
 
+def write_brief(path: Path, body: dict):
+    """Atomic local projection for an admitted static reader; no graph write."""
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError("brief projection path is a symlink")
+    if path.exists() and path.stat().st_uid != os.getuid():
+        raise ValueError("brief projection owner changed")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(prefix='.pr-flow-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(body, stream, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="chaski GitHub routing adapter (incremental protocol v1)")
     add_version_argument(ap, "chaski-github-routes")
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--quipu", help="quipu base URL (live reads)")
     ap.add_argument("--fixture", type=Path, help="episodes JSON instead of quipu (offline dry run)")
+    ap.add_argument("--brief-output", type=Path, help="atomically project --brief to an owned local file")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--describe", action="store_true")
     mode.add_argument("--changes", action="store_true", help="read one request as JSON on stdin")
+    mode.add_argument("--brief", action="store_true", help="read-only observed PR-state summary")
     args = ap.parse_args(argv)
+    if args.brief_output and not args.brief:
+        ap.error("--brief-output requires --brief")
     cfg = load_config(args.config)
     if args.fixture:
         doc = json.loads(args.fixture.read_text())
@@ -975,6 +1107,15 @@ def main(argv: list[str] | None = None) -> int:
     adapter = Adapter(cfg, facts)
     if args.describe:
         out = adapter.describe()
+    elif args.brief:
+        try:
+            now = datetime.now(timezone.utc).timestamp()
+            out = flow_summary(cfg, {repo: facts.snapshot(repo, now) for repo in cfg.repos}, now)
+            if args.brief_output:
+                write_brief(args.brief_output, out)
+        except FactsUnknown as exc:
+            print(f"UNKNOWN: {exc}", file=sys.stderr)
+            return 3
     else:
         try:
             out = adapter.handle(json.load(sys.stdin))
