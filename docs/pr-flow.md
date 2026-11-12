@@ -9,6 +9,9 @@ minutes. `approved_after_minutes` changes that interval. `review_after_minutes`
 continues to govern the existing green/unreviewed deadline. Head changes and
 closures retire candidates through the existing deadline protocol. Requests
 reuse the existing deterministic request IDs and delivery ledger.
+The receiver checks the current opt-in before claiming a conflict or stalled
+request. Disabling it refuses pending requests before any ledger or item effect.
+With the option off, conflict observations preserve the legacy decisions.
 
 `crew_reviews.enabled: true` routes reviews to named crew instead of ephemeral
 workers. Configure an explicit `reviewers` list, the admitted delivery SDK's

@@ -821,7 +821,7 @@ def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[
                 due = max(pr["head_since"], ci["green_at"], appr["approved_at"]) + repo_cfg.approved_after_s
                 put("merge-stalled", subject, pr["head"], READY if now >= due else WAIT,
                     None if now >= due else due, {**_pr_facts(repo, pr, ci, appr), "flow": flow})
-        if flow["state"] == "conflicting":
+        if repo_cfg.stale_prs_enabled and flow["state"] == "conflicting":
             continue  # never schedule review/merge work for a known conflict
         # (a) review
         if not appr["reviewed"]:

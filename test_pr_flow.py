@@ -169,3 +169,42 @@ def test_named_crew_handoff_has_no_ephemeral_reporting_instruction(tmp_path):
     bad['facts']['head_sha'] = 'a' * 40
     with pytest.raises(gw.RequestError):
         gw.parse_request({**event, 'evidence': json.dumps(bad)}, config)
+
+
+@pytest.mark.parametrize('kind', ['conflict', 'merge-stalled'])
+def test_pending_stale_request_after_disable_has_no_effect(tmp_path, kind):
+    config = cfg(tmp_path)
+    episodes = [ep(n) for n in BASE]
+    if kind == 'conflict':
+        episodes.append(variant('pull_request.opened', 'disable-conflict', props={
+            'githubMergeable': False, 'githubMergeableState': 'dirty',
+            'occurredAt': '2026-10-27T19:00:00Z'}))
+    now = ts('2026-10-27T22:00:00Z')
+    snap = snapshot(episodes, [verdict('reviewer')])
+    decisions = gr.evaluate_repo(config, config.repos[REPO], snap, [], now)
+    decision = next(d for d in decisions.values() if d.kind == kind)
+    event = gr.record_for(config, decision)
+    doc = cfg_doc(tmp_path)
+    disabled = gr.parse_config(doc)
+    ledger = gw.Ledger(disabled.ledger)
+    try:
+        items, spawner = gw.make_ports(disabled)
+        with pytest.raises(gw.RequestError, match='disabled'):
+            gw.deliver(event, disabled, ledger, items, spawner, now)
+        assert ledger.get(event['event_id']) is None
+        assert lines(tmp_path / 'items.jsonl') == []
+        assert lines(tmp_path / 'spawns.jsonl') == []
+    finally:
+        ledger.close()
+
+
+def test_default_off_conflict_preserves_legacy_merge_and_review(tmp_path):
+    config = gr.parse_config(cfg_doc(tmp_path))
+    episodes = [ep(n) for n in BASE] + [variant('pull_request.opened', 'legacy-conflict', props={
+        'githubMergeable': False, 'githubMergeableState': 'dirty',
+        'occurredAt': '2026-10-27T19:00:00Z'})]
+    now = ts('2026-10-27T22:00:00Z')
+    for words, expected in [([verdict('reviewer')], 'merge'), ([], 'review')]:
+        decisions = gr.evaluate_repo(config, config.repos[REPO], snapshot(episodes, words), [], now)
+        assert expected in {d.kind for d in decisions.values()}
+        assert not {'conflict', 'merge-stalled'} & {d.kind for d in decisions.values()}

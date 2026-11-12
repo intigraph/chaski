@@ -94,6 +94,8 @@ def parse_request(event: dict, cfg: gr.Config) -> dict:
         raise RequestError("request fields disagree with its item key")
     if repo not in cfg.repos:
         raise RequestError(f"{repo} is not a configured repository")
+    if kind in {"conflict", "merge-stalled"} and not cfg.repos[repo].stale_prs_enabled:
+        raise RequestError("stale PR route is disabled")
     facts = req.get("facts")
     if not isinstance(facts, dict):
         raise RequestError("request has no facts")
