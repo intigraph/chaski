@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/intigraph/chaski/compare/v0.5.0...v0.6.0) (2026-11-12)
+
+
+### Features
+
+* **github:** queue stale PR work for named crew ([#67](https://github.com/intigraph/chaski/issues/67)) ([1076f28](https://github.com/intigraph/chaski/commit/1076f28b3f0a8cc31b3fdf69556621633ab18a35))
+
 ## [0.5.0](https://github.com/intigraph/chaski/compare/v0.4.2...v0.5.0) (2026-11-09)
 
 
