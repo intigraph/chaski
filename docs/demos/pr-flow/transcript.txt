@@ -1,0 +1,7 @@
+Synthetic source fixture; no service, item or process is created.
+
+BASE
+Config refused: repos.intigraph/camayoc: unknown field(s)
+
+CANDIDATE
+Request: conflict route: administrator assignee: author
