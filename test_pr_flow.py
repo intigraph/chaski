@@ -71,7 +71,8 @@ def test_conflict_routes_only_to_declared_author_and_suppresses_merge(tmp_path):
     assert req['route'] == 'administrator' and req['assignee'] == 'author'
     forged = json.loads(record['evidence'])
     forged['assignee'] = 'someone-else'
-    with pytest.raises(gw.RequestError): gw.parse_request({**event, 'evidence': json.dumps(forged)}, config)
+    with pytest.raises(gw.RequestError):
+        gw.parse_request({**event, 'evidence': json.dumps(forged)}, config)
 
 
 def test_summary_is_qualified_and_missing_pr_coverage_is_unknown(tmp_path):
@@ -108,27 +109,39 @@ def test_crew_review_queues_once_without_ephemeral_spawn(tmp_path, monkeypatch):
     ledger = gw.Ledger(config.ledger)
     try:
         items, spawner = gw.make_ports(config)
-        for _ in range(3): assert gw.deliver(event, config, ledger, items, spawner, now)[0] == 0
+        for _ in range(3):
+            assert gw.deliver(event, config, ledger, items, spawner, now)[0] == 0
         records = lines(tmp_path / 'items.jsonl')
         assert len(records) == 1 and records[0]['request']['assignee'] == 'reviewer'
         assert ledger.recipient(event['event_id']) == 'reviewer'
         assert len(calls) == 1 and lines(tmp_path / 'spawns.jsonl') == []
-    finally: ledger.close()
+    finally:
+        ledger.close()
 
 
-@pytest.mark.parametrize('change', ['stale', 'future', 'sdk', 'timeout', 'incomplete', 'busy', 'unchecked', 'duplicate'])
+@pytest.mark.parametrize('change', [
+    'stale', 'future', 'sdk', 'timeout', 'incomplete', 'busy', 'unchecked', 'duplicate'])
 def test_unknown_profile_never_assigns_a_reviewer(tmp_path, change):
     now = ts(GREEN_AT) + 7200
     observation = copy.deepcopy(profile(now))
-    if change == 'stale': observation['observed_at'] = gr.iso(now - 91)
-    elif change == 'future': observation['observed_at'] = gr.iso(now + 1)
-    elif change == 'sdk': observation['delivery_sdk_sha256'] = 'a' * 64
-    elif change == 'timeout': observation['quipu_408s'] = 1
-    elif change == 'incomplete': observation['complete'] = False
-    elif change == 'busy': observation['agents'][1]['work'] = 'working'
-    elif change == 'unchecked': observation['agents'][1]['assignment_checked'] = False
-    elif change == 'duplicate': observation['agents'].append(observation['agents'][1])
-    with pytest.raises(gw.Refused): gw.review_recipient(observation, 'author', SHA, now, 'a' * 64, ['reviewer'])
+    if change == 'stale':
+        observation['observed_at'] = gr.iso(now - 91)
+    elif change == 'future':
+        observation['observed_at'] = gr.iso(now + 1)
+    elif change == 'sdk':
+        observation['delivery_sdk_sha256'] = 'a' * 64
+    elif change == 'timeout':
+        observation['quipu_408s'] = 1
+    elif change == 'incomplete':
+        observation['complete'] = False
+    elif change == 'busy':
+        observation['agents'][1]['work'] = 'working'
+    elif change == 'unchecked':
+        observation['agents'][1]['assignment_checked'] = False
+    elif change == 'duplicate':
+        observation['agents'].append(observation['agents'][1])
+    with pytest.raises(gw.Refused):
+        gw.review_recipient(observation, 'author', SHA, now, 'a' * 64, ['reviewer'])
 
 
 def test_projection_replaces_atomically_and_refuses_symlinks(tmp_path):
@@ -140,7 +153,8 @@ def test_projection_replaces_atomically_and_refuses_symlinks(tmp_path):
     assert list(target.parent.glob('.pr-flow-*')) == []
     link = tmp_path / 'link'
     link.symlink_to(target)
-    with pytest.raises(ValueError): gr.write_brief(link, {'state': 'UNKNOWN'})
+    with pytest.raises(ValueError):
+        gr.write_brief(link, {'state': 'UNKNOWN'})
     assert json.loads(target.read_text()) == {'state': 'observed'}
 
 

@@ -246,7 +246,8 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
         include_prereleases=d["release"]["include_prereleases"],
         release_window_s=3600 * _int(d["release"]["window_hours"], f"{key}.release.window_hours", 1, 720),
         stale_prs_enabled=d["stale_prs"]["enabled"],
-        approved_after_s=60 * _int(d["stale_prs"]["approved_after_minutes"], f"{key}.stale_prs.approved_after_minutes", 1, 10080))
+        approved_after_s=60 * _int(d["stale_prs"]["approved_after_minutes"],
+                                   f"{key}.stale_prs.approved_after_minutes", 1, 10080))
 
 
 # --------------------------------------------------------------------------- keys
@@ -788,7 +789,8 @@ def flow_summary(cfg: Config, snapshots: dict[str, Snapshot], now: float) -> dic
             "oldest_age_seconds": max((r["age_seconds"] for r in records), default=None),
             "records": records,
             "metrics": {"main_only_repushes": None, "time_to_first_review_seconds": None,
-                        "reason": "requires complete historical review and verified unchanged-proposal refresh evidence"}}
+                        "reason": ("requires complete historical review and verified "
+                                   "unchanged-proposal refresh evidence")}}
 
 
 def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[LaneRow],

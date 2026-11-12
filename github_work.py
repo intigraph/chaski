@@ -307,7 +307,8 @@ def review_recipient(observation, author, expected_sdk, now, request_id, reviewe
         if name in names:
             raise Refused("ambiguous review routing identity")
         names.add(name)
-        if (name in reviewers and name.lower() != author.lower() and row.get("available") is True and row.get("assignment_checked") is True
+        if (name in reviewers and name.lower() != author.lower() and row.get("available") is True
+                and row.get("assignment_checked") is True
                 and row.get("state") == "up" and row.get("work") == "idle"
                 and row.get("harness") in ("codex", "claude")):
             eligible.append(name)
