@@ -219,6 +219,54 @@ def test_extra_matching_population_refuses_every_append(state):
     assert conn.execute("SELECT COUNT(*) FROM outbox_dispositions").fetchone() == (0,)
 
 
+def test_successive_cli_plans_exclude_prior_receipts_and_replay_both(state, tmp_path, capsys):
+    conn, definition = state
+    first = plan_for(conn)
+    apply(conn, first)
+    apply(conn, first)
+    old_receipts = list(conn.execute("SELECT * FROM outbox_dispositions"))
+    em.observe(conn, definition, [{"item": "later", "verdict": "NO"}], 4)
+    em.observe(conn, definition, [{"item": "later", "verdict": "YES", "event_id": "later"}], 5)
+    originals = list(conn.execute("SELECT * FROM outbox ORDER BY event_id"))
+    output = tmp_path / "later-plan.json"
+    assert em.disposition_main([
+        "plan", "--db", str(tmp_path / "inbox.db"), "--plan", str(output),
+        "--emitter", "source", "--created-before", "6", "--expected-count", "1",
+        "--reason", "later obsolete cohort", "--ruling-ref", "ruling-2",
+    ]) == 0
+    capsys.readouterr()
+    second = json.loads(output.read_text())
+    assert [entry["event_id"] for entry in second["rows"]] == ["later"]
+    apply(conn, second)
+    both_receipts = list(conn.execute("SELECT * FROM outbox_dispositions ORDER BY event_id"))
+    apply(conn, first)
+    apply(conn, second)
+    assert list(conn.execute("SELECT * FROM outbox ORDER BY event_id")) == originals
+    assert list(conn.execute("SELECT * FROM outbox_dispositions ORDER BY event_id")) == both_receipts
+    assert conn.execute(
+        "SELECT * FROM outbox_dispositions WHERE event_id=?", (first["rows"][0]["event_id"],)
+    ).fetchall() == old_receipts
+    assert em.verify_dispositions(conn) == 2
+    conflicting = dict(second, reason="different ruling")
+    with pytest.raises(ValueError, match="conflicting"):
+        apply(conn, conflicting)
+    assert list(conn.execute("SELECT * FROM outbox_dispositions ORDER BY event_id")) == both_receipts
+
+
+def test_readonly_first_plan_does_not_create_ledger_in_legacy_database(state, tmp_path, capsys):
+    conn, _ = state
+    conn.execute("DROP TABLE outbox_dispositions")
+    output = tmp_path / "legacy-plan.json"
+    assert em.disposition_main([
+        "plan", "--db", str(tmp_path / "inbox.db"), "--plan", str(output),
+        "--emitter", "source", "--created-before", "3", "--expected-count", "1",
+        "--reason", "obsolete", "--ruling-ref", "ruling-1",
+    ]) == 0
+    capsys.readouterr()
+    assert len(json.loads(output.read_text())["rows"]) == 1
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name='outbox_dispositions'").fetchall() == []
+
+
 def test_disposed_original_cannot_be_renamed_by_supported_migration(state):
     import state_key_migration as migration
 

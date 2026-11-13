@@ -873,6 +873,32 @@ def verify_dispositions(conn):
     return len(rows)
 
 
+def disposition_ledger_present(conn):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox_dispositions'"
+    ).fetchone() is not None
+
+
+def disposition_population(conn, emitter, cutoff, limit, replay_digest=None):
+    """New plans exclude receipts; replay includes only this exact plan's receipts.
+
+    A first read-only plan may inspect a legacy database before schema adoption.
+    Missing ledger is empty only after a successful exact schema read.
+    """
+    join, receipt_filter, receipt_params = '', '', ()
+    if disposition_ledger_present(conn):
+        join = (" LEFT JOIN outbox_dispositions d ON d.source_table='outbox' "
+                'AND d.event_id=o.event_id')
+        receipt_filter = 'AND (d.event_id IS NULL OR d.plan_sha256=?) '
+        receipt_params = (replay_digest,)
+    return conn.execute(
+        'SELECT o.event_id FROM outbox o' + join +
+        ' WHERE o.emitter=? AND o.created<=? AND o.delivered_at IS NULL '
+        'AND o.attempts=0 AND o.delivery_scope IS NULL AND o.recovery_queued=0 ' +
+        receipt_filter + 'ORDER BY o.event_id LIMIT ?',
+        (emitter, cutoff, *receipt_params, limit)).fetchall()
+
+
 def inspect_disposition_plan(conn, plan):
     fields = {'schema', 'emitter', 'created_before', 'expected_count', 'reason',
               'ruling_ref', 'source_utc', 'rows'}
@@ -902,14 +928,19 @@ def inspect_disposition_plan(conn, plan):
         if (row['emitter'] != plan['emitter'] or row['created'] > plan['created_before']
                 or disposition_digest(row) != entry['row_sha256']):
             raise ValueError('exact reviewed row changed or foreign scope')
-    population = {row[0] for row in conn.execute(
-        'SELECT event_id FROM outbox WHERE emitter=? AND created<=? '
-        'AND delivered_at IS NULL AND attempts=0 AND delivery_scope IS NULL '
-        'AND recovery_queued=0 ORDER BY event_id LIMIT ?',
-        (plan['emitter'], plan['created_before'], plan['expected_count'] + 1))}
+    digest = disposition_digest(plan)
+    if disposition_ledger_present(conn):
+        for entry in plan['rows']:
+            prior = conn.execute(
+                "SELECT plan_sha256 FROM outbox_dispositions WHERE source_table='outbox' AND event_id=?",
+                (entry['event_id'],)).fetchone()
+            if prior is not None and prior[0] != digest:
+                raise ValueError('conflicting append-only disposition')
+    population = {row[0] for row in disposition_population(
+        conn, plan['emitter'], plan['created_before'], plan['expected_count'] + 1, digest)}
     if population != identities:
         raise ValueError('exact reviewed population changed')
-    return disposition_digest(plan)
+    return digest
 
 
 def apply_disposition_plan(conn, plan, expected_sha256):
@@ -995,11 +1026,8 @@ def disposition_main(argv=None):
                     ap.error('plan requires emitter, cutoff, count, reason, ruling ref and output path')
                 if type(args.expected_count) is not int or not 1 <= args.expected_count <= 10000:
                     ap.error('exact count must be 1..10000')
-                rows = conn.execute(
-                    'SELECT event_id FROM outbox WHERE emitter=? AND created<=? '
-                    'AND delivered_at IS NULL AND attempts=0 AND delivery_scope IS NULL '
-                    'AND recovery_queued=0 ORDER BY event_id LIMIT ?',
-                    (args.emitter, args.created_before, args.expected_count + 1)).fetchall()
+                rows = disposition_population(
+                    conn, args.emitter, args.created_before, args.expected_count + 1)
                 if len(rows) != args.expected_count:
                     raise ValueError('review population count changed')
                 plan = {'schema': DISPOSITION_PLAN, 'emitter': args.emitter,

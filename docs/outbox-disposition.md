@@ -25,6 +25,13 @@ population and every full-row hash must match. Changes, duplicates, foreign scop
 recovery payloads and conflicting prior decisions refuse the whole append.
 Replaying the identical plan is idempotent. No sink or network call occurs.
 
+New plans select only work without a prior disposition, so later cohorts can be
+expired without selecting the originals retained by an earlier plan. Validation
+includes receipts belonging to the exact plan being replayed; receipts from
+other plans remain excluded. Both original plans can be replayed without changing
+their receipts, while a changed decision for an already-disposed identity still
+refuses. Newly eligible rows outside the reviewed population still refuse apply.
+
 `list --db INBOX` lists retained receipts (up to 10,000; a larger population
 refuses). `verify --db INBOX` checks original row hashes and eligibility read-only.
 Startup verifies the same contract; missing or changed originals refuse startup.
