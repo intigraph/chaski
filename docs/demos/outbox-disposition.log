@@ -1,0 +1,7 @@
+Script started on 2026-11-13 14:10:21-05:00 [COMMAND="python3 scripts/demo-outbox-disposition.py" <not executed on terminal>]
+Synthetic fixture: same old firing; deliver_pending at t=10; fresh control at t=20. base
+{"mode": "base", "obsolete_attempts": 1, "obsolete_received": true, "sent": ["old-event", "fresh-event"], "fresh_control_received": true}
+Synthetic fixture: same old firing; deliver_pending at t=10; fresh control at t=20. expired
+{"mode": "expired", "obsolete_attempts": 0, "obsolete_received": false, "sent": ["fresh-event"], "fresh_control_received": true}
+
+Script done on 2026-11-13 14:10:21-05:00 [COMMAND_EXIT_CODE="0"]
