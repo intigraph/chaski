@@ -248,3 +248,25 @@ def test_projection_configuration_requires_an_object_not_pairs(setup):
     config["projection"] = list(config["projection"].items())
     result = run()
     assert result.returncode == 2 and not result.stdout and count(counter) == 0
+
+
+def test_version_three_one_occurrence_uses_real_reader_and_no_new_slot(setup):
+    p, config, _, report, counter, _, run = setup
+    config['version'] = 3
+    config['projection'].pop('interval_s')
+    config['projection'].update(repeat_count=1, effective_at=p.anchor_s)
+    body = catalogue(p)
+    body['jobs'][0].update(interval_s=None, repeat_count=1)
+    report.write_text(json.dumps(body))
+    assert run().returncode == 0 and count(counter) == 0
+    for now in (p.anchor_s, p.anchor_s+600, p.anchor_s+86400):
+        result = run(dict(now=now, items=[p.scope.job], changes=[]))
+        assert result.returncode == 0, result.stderr
+        out = json.loads(result.stdout)
+        from scheduled_receiver import run_id
+        assert out['records'][0]['event_id'] == run_id(p.scope, p.anchor_s)
+        assert out['next_checks'] == {p.scope.job: None}
+    body['jobs'][0]['repeat_count'] = 2
+    report.write_text(json.dumps(body))
+    result = run(dict(now=p.anchor_s, items=[p.scope.job], changes=[]))
+    assert result.returncode == 2 and not result.stdout

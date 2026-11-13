@@ -1,0 +1,10 @@
+Script started on 2026-11-13 16:29:28-05:00 [COMMAND=".venv/bin/python scripts/demo-single-occurrence.py --before /tmp/dearing-vk5/chaski-base.py" <not executed on terminal>]
+BASE: REFUSED adapter configuration version unsupported
+CANDIDATE at 599 verdict BLOCKED next 600
+CANDIDATE at 600 verdict UNBLOCKED next None
+CANDIDATE at 601 verdict UNBLOCKED next None
+CANDIDATE at 86400 verdict UNBLOCKED next None
+One original run identity across all due observations; no rebasing.
+Fixture only; no reader process, graph, signing key or scheduler access.
+
+Script done on 2026-11-13 16:29:28-05:00 [COMMAND_EXIT_CODE="0"]
