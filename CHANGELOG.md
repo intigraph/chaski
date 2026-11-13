@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/intigraph/chaski/compare/v0.6.0...v0.7.0) (2026-11-13)
+
+
+### Features
+
+* **schedules:** project one declared UTC occurrence ([#73](https://github.com/intigraph/chaski/issues/73)) ([40d1122](https://github.com/intigraph/chaski/commit/40d112285c4d5fc092c301e82a40085723e6f78c))
+
+
+### Bug Fixes
+
+* **command-sink:** preserve bounded failure correlation records ([#69](https://github.com/intigraph/chaski/issues/69)) ([64e4845](https://github.com/intigraph/chaski/commit/64e484528d1b7f6955dbdff01e9d4e2c2a367464))
+
 ## [0.6.0](https://github.com/intigraph/chaski/compare/v0.5.0...v0.6.0) (2026-11-12)
 
 
