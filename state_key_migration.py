@@ -65,7 +65,14 @@ def inspect(conn, plan):
         old, new = row(conn, emitter, source), row(conn, emitter, target)
         state = digest({"from": stable(old), "to": stable(new)})
         conflict = None
-        if state != mapping["expected"]:
+        ledger = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                              "AND name='outbox_dispositions'").fetchone()
+        disposed = ledger and conn.execute(
+            "SELECT 1 FROM outbox_dispositions d JOIN outbox o ON o.event_id=d.event_id "
+            "WHERE o.emitter=? AND o.item IN (?,?) LIMIT 1", (emitter, source, target)).fetchone()
+        if disposed:
+            conflict = "append-only disposition freezes this event identity"
+        elif state != mapping["expected"]:
             conflict = "logical state changed since reviewed dry-run"
         elif old is None:
             if new is None:
