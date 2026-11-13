@@ -15,6 +15,39 @@ def script(body: str) -> list[str]:
 
 
 class Delivery(unittest.TestCase):
+    def test_wrapped_failure_keeps_complete_correlation_without_remote_text(self):
+        for stage, event, scope, failure in (
+                ("receive", "e" * 64, None, "failure-" + "f" * 64 + ".log"),
+                ("tick-emitter", None, "a" * 64, "failure-" + "b" * 64 + ".log"),
+                ("peer-route-presend", "c" * 64, "d" * 64, None)):
+            row = dict(stage=stage, invocation="1" * 32, event_id=event,
+                       scope_sha256=scope, error="UnsafeObservation", failure=failure,
+                       retention="retained" if failure else "unknown", process_status=2)
+            line = "CHASKI_FAILURE " + json.dumps(row, sort_keys=True)
+            self.assertGreater(len(line), 300)
+            with self.assertRaises(ConnectionError) as ctx:
+                cs.CommandSink(script(
+                    f"import sys; sys.stderr.write({line!r}); sys.exit(2)"
+                )).deliver(EVENT)
+            wrapped = f"delivery of ev-1 failed (attempt 1): {ctx.exception}"
+            self.assertIn("exited 2", wrapped)
+            self.assertEqual(json.loads(wrapped.split("CHASKI_FAILURE ", 1)[1]), row)
+            self.assertLess(len(str(ctx.exception)), 1200)
+
+    def test_only_complete_fixed_schema_gets_larger_budget(self):
+        row = dict(stage="receive", invocation="1" * 32, event_id="e" * 64,
+                   scope_sha256=None, error="Unknown", failure=None,
+                   retention="unknown", process_status=None)
+        invalid = [dict(row, remote="secret"), dict(row, stage="secret\nforged"),
+                   dict(row, invocation="secret"), dict(row, process_status=True),
+                   dict(row, error="private remote text"), dict(row, failure="/private/path")]
+        for value in invalid:
+            text = "CHASKI_FAILURE " + json.dumps(value) + " " * 400
+            self.assertEqual(cs.failure_diagnostic(text), text.strip()[:300])
+        for text in ("x" * 2000, "CHASKI_FAILURE {" + "x" * 1200,
+                     "CHASKI_FAILURE " + json.dumps(row) + "\nprivate remote text"):
+            self.assertEqual(cs.failure_diagnostic(text), text.strip()[:300])
+
     def test_exit_zero_is_the_receipt_and_the_event_arrives_on_stdin(self):
         out = Path(tempfile.mkdtemp()) / "got.json"
         cs.CommandSink(script(f"import sys; open({str(out)!r},'w').write(sys.stdin.read())")).deliver(EVENT)
