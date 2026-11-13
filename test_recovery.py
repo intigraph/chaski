@@ -271,6 +271,33 @@ class ReceiverScope(unittest.TestCase):
                     self.assertEqual(self.send(sink), (0, 1))
                 self.assertIsNone(self.conn.execute("SELECT delivered_at FROM recovery_outbox").fetchone()[0])
 
+    def test_graph_vocabulary_upgrade_fences_a_lost_original_answer(self):
+        sink = FakeGraph()
+        old_scope = sink.delivery_scope()
+        del old_scope['vocabulary']
+        self.conn.execute("UPDATE outbox SET delivery_scope=?,attempts=1,last_error='lost answer'",
+                          (json.dumps(old_scope),))
+        before = self.conn.execute("SELECT payload,delivery_scope FROM outbox").fetchall()
+        with patch.object(sink, 'deliver', side_effect=AssertionError('old firing replay')), \
+                patch.object(sink, 'setup', side_effect=AssertionError('old setup replay')):
+            self.assertEqual(em.deliver_pending(self.conn, sink, 102, 'control'), (0, 1))
+        self.assertEqual(self.conn.execute("SELECT payload,delivery_scope FROM outbox").fetchall(), before)
+        self.assertIsNone(self.conn.execute("SELECT delivered_at FROM outbox").fetchone()[0])
+
+    def test_graph_vocabulary_upgrade_does_not_reinterpret_a_frozen_old_scope(self):
+        sink = FakeGraph()
+        old_scope = sink.delivery_scope()
+        del old_scope['vocabulary']
+        self.conn.execute("UPDATE outbox SET delivery_scope=?,delivered_at=102",
+                          (json.dumps(old_scope),))
+        before = self.conn.execute("SELECT payload FROM outbox").fetchall()
+        self.recover()
+        with patch.object(sink, 'prepare_recovery', side_effect=AssertionError('old scope read')), \
+                patch.object(sink, 'setup', side_effect=AssertionError('old scope write')):
+            self.assertEqual(self.send(sink), (0, 1))
+        self.assertEqual(self.conn.execute("SELECT payload FROM outbox").fetchall(), before)
+        self.assertIsNone(self.conn.execute("SELECT delivered_at FROM recovery_outbox").fetchone()[0])
+
 
 PRIOR = {"event_id": "prior-id", "emitter": "control", "item": "one", "observed_at": 100}
 EVENT = {"event_id": "resolved-id", "prior": PRIOR, "resolved_at": 200}
@@ -305,7 +332,7 @@ class FakeGraph(QuipuFiringSink):
                 self.lost = False
                 raise ConnectionError("lost graph answer")
             return {"asserted": 0 if len(self.writes) > 1 else 1}
-        return {"rows": self.rows if "?p ?e" in body["query"] else self.ends}
+        return {"rows": self.rows if "?predicate ?e" in body["query"] else self.ends}
 
 
 class SinkRecovery(unittest.TestCase):
@@ -351,7 +378,7 @@ class SinkRecovery(unittest.TestCase):
         body = sink.writes[0]
         self.assertEqual(body, sink.writes[1])
         self.assertEqual(body["entity"], firing_iri("control", "prior-id"))
-        self.assertEqual(body["predicate"], NS + "resolvedAt")
+        self.assertEqual(body["predicate"], "https://w3id.org/intigraph/camayoc/core/ns#resolvedAt")
         self.assertEqual(body["value"]["datatype"], "http://www.w3.org/2001/XMLSchema#dateTime")
         self.assertEqual(body["source"], "chaski:recovery:resolved-id")
 
@@ -381,9 +408,9 @@ class SinkRecovery(unittest.TestCase):
                 sink = FakeGraph()
                 sink.rows = [{"p": prefix + "eventId", "e": PRIOR["event_id"]}]
                 receipt = sink.prepare_recovery(EVENT)
-                self.assertEqual(receipt["predicate"], NS + "resolvedAt")
+                self.assertEqual(receipt["predicate"], "https://w3id.org/intigraph/camayoc/core/ns#resolvedAt")
                 sink.resolve({**EVENT, "receipt": receipt})
-                self.assertEqual(sink.writes[0]["predicate"], NS + "resolvedAt")
+                self.assertEqual(sink.writes[0]["predicate"], "https://w3id.org/intigraph/camayoc/core/ns#resolvedAt")
 
     def test_graph_compact_prior_close_is_still_recognised(self):
         sink = FakeGraph()

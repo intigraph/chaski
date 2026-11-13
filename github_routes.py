@@ -51,6 +51,36 @@ from pathlib import Path
 import yaml
 
 AEGIS = "http://aegis.gastown.local/ontology/"
+
+# Read-only ownership crosswalk a389be53; unmapped GitHub terms stay explicit
+# historical read references pending the vocabulary-owner child. No writer uses it.
+_READ_TERMS = {'Verdict': 'https://w3id.org/intigraph/quipu/ns#Verdict',
+ 'commitSha': 'https://w3id.org/intigraph/camayoc/delivery/ns#commitSha',
+ 'evidenceHash': 'https://w3id.org/intigraph/camayoc/core/ns#evidenceHash',
+ 'occurredAt': 'https://w3id.org/intigraph/camayoc/delivery/ns#occurredAt',
+ 'outcome': 'https://w3id.org/intigraph/camayoc/core/ns#outcome',
+ 'predicateId': 'https://w3id.org/intigraph/camayoc/core/ns#predicateId',
+ 'reviewState': 'https://w3id.org/intigraph/camayoc/delivery/ns#reviewState',
+ 'signature': 'https://w3id.org/intigraph/camayoc/core/ns#signature',
+ 'targetRef': 'https://w3id.org/intigraph/camayoc/core/ns#targetRef',
+ 'tier': 'https://w3id.org/intigraph/camayoc/core/ns#tier',
+ 'verifier': 'https://w3id.org/intigraph/camayoc/core/ns#verifier'}
+
+
+def _read_pattern(subject, name, obj):
+    legacy = AEGIS + name
+    canonical = _READ_TERMS.get(name)
+    if canonical is None:
+        return f"{subject} <{legacy}> {obj} . "
+    return (f"{{ {{ {subject} <{canonical}> {obj} }} UNION "
+            f"{{ {subject} <{legacy}> {obj} }} }} ")
+
+
+def _read_class(subject, name):
+    canonical = _READ_TERMS.get(name)
+    legacy = f"{subject} a <{AEGIS + name}> . "
+    return (f"{{ {{ {subject} a <{canonical}> }} UNION {{ {legacy} }} }} "
+            if canonical is not None else legacy)
 SCHEMA = "chaski.github.work-request/v1"
 WAIT, READY = "WAIT", "READY"
 KINDS = ("review", "merge", "outside-contribution", "triage", "install", "announce", "conflict", "merge-stalled")
@@ -390,43 +420,53 @@ def _q(text: str) -> str:
 def activity_query(graph: str, repo: str, since: str) -> str:
     if not IRI.match(graph) or not REPO.match(repo):
         raise ValueError("invalid graph or repo")
-    opt = "".join(f" OPTIONAL {{ ?a aegis:{p} ?{v} }}" for p, v in (
+    opt = "".join(" OPTIONAL { " + _read_pattern("?a", p, "?"+v) + "}" for p, v in (
         ("githubActorLogin", "actor"), ("commitSha", "sha"), ("githubState", "state"),
         ("githubMerged", "merged"), ("githubDraft", "draft"), ("githubBaseRef", "base"),
         ("githubStatus", "status"), ("githubConclusion", "conclusion"), ("githubRunAttempt", "attempt"),
         ("reviewState", "review"), ("githubPrerelease", "pre"),
         ("githubMergeable", "mergeable"), ("githubMergeableState", "mergeable_state"),
         ("githubBaseSha", "base_sha")))
-    eopt = "".join(f" OPTIONAL {{ ?e aegis:{p} ?{v} }}" for p, v in (
+    eopt = "".join(" OPTIONAL { " + _read_pattern("?e", p, "?"+v) + "}" for p, v in (
         ("githubNumber", "num"), ("githubAuthorLogin", "author"), ("githubName", "name"),
         ("githubTagName", "tag"), ("githubUrl", "url"), ("githubCreatedAt", "created")))
-    return ("PREFIX aegis: <%s> SELECT ?a ?kind ?at ?actor ?sha ?state ?merged ?draft ?base ?status "
+    return ("SELECT ?a ?kind ?at ?actor ?sha ?state ?merged ?draft ?base ?status "
             "?conclusion ?attempt ?review ?pre ?e ?etype ?num ?author ?name ?tag ?url ?thread ?tnum "
-            "?mergeable ?mergeable_state ?base_sha ?created "
-            "WHERE { GRAPH <%s> { ?repo aegis:githubFullName %s . "
-            "?a a aegis:GitHubActivity ; aegis:inGitHubRepository ?repo ; aegis:githubEventKind ?kind ; "
-            "aegis:occurredAt ?at ; aegis:aboutGitHubEntity ?e . FILTER(STR(?at) >= %s) "
-            "?e a ?etype . FILTER(STRSTARTS(STR(?etype), \"%sGitHub\"))%s%s "
-            "OPTIONAL { ?e aegis:onGitHubThread ?thread . ?thread aegis:githubNumber ?tnum } } }"
-            % (AEGIS, graph, _q(repo), _q(since), AEGIS, opt, eopt))
+            "?mergeable ?mergeable_state ?base_sha ?created WHERE { GRAPH <"+graph+"> { "
+            + _read_pattern("?repo", "githubFullName", _q(repo))
+            + _read_class("?a", "GitHubActivity")
+            + _read_pattern("?a", "inGitHubRepository", "?repo")
+            + _read_pattern("?a", "githubEventKind", "?kind")
+            + _read_pattern("?a", "occurredAt", "?at")
+            + _read_pattern("?a", "aboutGitHubEntity", "?e")
+            + "FILTER(STR(?at) >= "+_q(since)+") ?e a ?etype . "
+            + "FILTER(STRSTARTS(STR(?etype), "+_q(AEGIS+"GitHub")+"))"+opt+eopt
+            + " OPTIONAL { "+_read_pattern("?e", "onGitHubThread", "?thread")
+            + _read_pattern("?thread", "githubNumber", "?tnum")+" } } }")
 
 
 def verdict_query(repo: str, predicate: str = REVIEW_PREDICATE) -> str:
-    """Stored signed review verdicts about this repo's PRs, in any graph. The
-    graph is not trusted: every candidate goes through /verdict/verify."""
+    """Candidates only; every row still requires native signature verification."""
     if not REPO.match(repo):
         raise ValueError("invalid repo")
-    return ("PREFIX aegis: <%s> SELECT ?v ?target ?outcome ?hash ?tier ?verifier ?sig WHERE { GRAPH ?g { "
-            "?v a aegis:Verdict ; aegis:predicateId ?pred ; aegis:targetRef ?target ; aegis:outcome ?outcome ; "
-            "aegis:evidenceHash ?hash ; aegis:verifier ?verifier ; aegis:signature ?sig . "
-            "OPTIONAL { ?v aegis:tier ?tier } FILTER(STR(?pred) = %s) "
-            "FILTER(STRSTARTS(STR(?target), %s)) } }" % (AEGIS, _q(predicate), _q(f"github:pr:{repo}#")))
+    fields = (("predicateId", "pred"), ("targetRef", "target"), ("outcome", "outcome"),
+              ("evidenceHash", "hash"), ("verifier", "verifier"), ("signature", "sig"))
+    return ("SELECT ?v ?target ?outcome ?hash ?tier ?verifier ?sig WHERE { GRAPH ?g { "
+            + _read_class("?v", "Verdict")
+            + "".join(_read_pattern("?v", name, "?"+variable) for name, variable in fields)
+            + "OPTIONAL { "+_read_pattern("?v", "tier", "?tier")+" } "
+            + "FILTER(STR(?pred) = "+_q(predicate)+") "
+            + "FILTER(STRSTARTS(STR(?target), "+_q(f"github:pr:{repo}#")+")) } }")
 
 
 def author_query(graph: str, repo: str) -> str:
-    return ("PREFIX aegis: <%s> SELECT ?pr ?agent WHERE { GRAPH <%s> { ?repo aegis:githubFullName %s . "
-            "?pr a aegis:GitHubPullRequest ; aegis:inGitHubRepository ?repo . } "
-            "GRAPH ?g { ?pr aegis:authoredByAgent ?agent } }" % (AEGIS, graph, _q(repo)))
+    if not IRI.match(graph) or not REPO.match(repo):
+        raise ValueError("invalid graph or repo")
+    return ("SELECT ?pr ?agent WHERE { GRAPH <"+graph+"> { "
+            + _read_pattern("?repo", "githubFullName", _q(repo))
+            + _read_class("?pr", "GitHubPullRequest")
+            + _read_pattern("?pr", "inGitHubRepository", "?repo")
+            + " } GRAPH ?g { "+_read_pattern("?pr", "authoredByAgent", "?agent")+" } }")
 
 
 class QuipuFacts:
