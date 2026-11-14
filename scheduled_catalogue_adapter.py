@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 
+from single_occurrence_projection import SingleOccurrenceProjection
 from scheduled_projection import MAX_TIME, ScheduledProjection
 from scheduled_receiver import ExecutionScope
 from weekly_projection import WeeklyScheduledProjection
@@ -77,14 +78,15 @@ def load_config(path, digest):
         raise ValueError('configuration changed')
     config = _decode(raw)
     _keys(config, ('version', 'projection', 'reader'))
-    if type(config['version']) is not int or config['version'] not in (1, 2):
+    if type(config['version']) is not int or config['version'] not in (1, 2, 3):
         raise ValueError('adapter configuration version unsupported')
     fields = ('scope', 'graph', 'target', 'owner', 'anchor_s', 'timezone', 'effective_at')
     _keys(config['projection'], fields + (('interval_s',) if config['version'] == 1
-                                        else ('weekday', 'local_time')))
+                                        else ('weekday', 'local_time') if config['version'] == 2
+                                        else ('repeat_count',)))
     projection = dict(config['projection'])
     projection['scope'] = ExecutionScope(**projection['scope'])
-    kind = ScheduledProjection if config['version'] == 1 else WeeklyScheduledProjection
+    kind = {1: ScheduledProjection, 2: WeeklyScheduledProjection, 3: SingleOccurrenceProjection}[config['version']]
     pinned = kind(**projection)
     reader = config['reader']
     _keys(reader, ('executable', 'root', 'env', 'timeout_s', 'output_limit'))

@@ -66,3 +66,16 @@ It shows two initial reads, no extra idle reads, one new read on the next slot,
 and retained deadline/outbox after deleting the required identity. The fake
 reader asserts exact list-only argv. No graph, job execution, signing key,
 profile or schedule is activated. The demo reuses development test fixtures.
+
+Version 3 pins `SingleOccurrenceProjection`: the common fields plus exactly
+`repeat_count: 1`, with no interval or weekday fields. The typed declaration
+reader must return `repeat_count: 1` and `interval_s: null`. Its RDF Schedule
+uses integer `schema:repeatCount` 1; other counts and mixed forms refuse.
+
+The sole deadline is the pinned UTC anchor. Activation cannot be later than
+that anchor. Once due, observations retain exactly that original signed run
+identity and publish no next deadline. Late discovery never rebases it or
+creates a catch-up slot. The existing durable outbox/slot receiver deduplicates
+redelivery; the paired Shuttle policy must accept only this one slot and
+apply its normal lateness check. No graph read failure becomes an empty success,
+and no configuration change grants executable or identity admission.
