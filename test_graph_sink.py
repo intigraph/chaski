@@ -99,14 +99,14 @@ class Sink(unittest.TestCase):
         ttl = next(iter(self.q.firings().values()))
         self.assertIn('"2026-09-26T05:20:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime>', ttl)
         ns = "http://aegis.gastown.local/ontology/"
-        self.assertIn(f"<{ns}focus> <{ns}aegis-abc123>", ttl)
+        self.assertIn(f"<{gs.term('focus')}> <{ns}aegis-abc123>", ttl)
 
     def test_the_reaction_is_written_once_and_is_typed(self):
         self.sink.deliver(EVENT)
         self.sink.deliver({**EVENT, "event_id": "sha256:bb"})
         reactions = [v for k, v in self.q.snapshots.items() if k.startswith("chaski:reaction:")]
         self.assertEqual(len(reactions), 1)
-        self.assertIn("<http://aegis.gastown.local/ontology/Reaction>", reactions[0])
+        self.assertIn(f"<{gs.term('Reaction')}>", reactions[0])
         self.assertIn('"alert"', reactions[0])
 
     def test_an_empty_answer_is_indeterminate_not_success(self):
@@ -272,7 +272,7 @@ class QuechuaDualRead(unittest.TestCase):
 
     def test_instance_identity_stays_under_the_legacy_namespace(self):
         self.assertTrue(self.firing.startswith(gs.NS + "firing-"))
-        self.assertIn(f"<{gs.NS}eventId>", self.sink.firing_turtle(EVENT))  # writers unchanged
+        self.assertIn(f"<{gs.term('eventId')}>", self.sink.firing_turtle(EVENT))
 
 
 class Provenance(unittest.TestCase):

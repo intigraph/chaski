@@ -438,7 +438,10 @@ def test_queries_are_bounded_to_the_one_graph_and_validated():
     with pytest.raises(ValueError):
         gr.activity_query("https://camayoc.local/operational/github", 'x/y" } DROP', "2026")
     vq = gr.verdict_query(REPO)
-    assert "a aegis:Verdict" in vq and "aegis:signature ?sig" in vq and '"github:pr:intigraph/camayoc#"' in vq
+    assert "<https://w3id.org/intigraph/quipu/ns#Verdict>" in vq
+    assert "<http://aegis.gastown.local/ontology/Verdict>" in vq
+    assert "<https://w3id.org/intigraph/camayoc/core/ns#signature> ?sig" in vq
+    assert '"github:pr:intigraph/camayoc#"' in vq
 
 
 def test_config_refuses_unknown_fields_and_needs_members():
@@ -488,7 +491,7 @@ class FakeQuipu:
                            "as_of": {"tx": 7, "at": "2026-10-27T18:55:00Z", "basis": "recorded"}}
                 else:
                     q = body["query"]
-                    rows = (author_rows if "authoredByAgent" in q else verdict_rows if "aegis:Verdict" in q
+                    rows = (author_rows if "authoredByAgent" in q else verdict_rows if "SELECT ?v ?target" in q
                             else activity_rows)
                     out = {"rows": rows}
                 data = json.dumps(out).encode()
