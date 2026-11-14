@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import subprocess
@@ -66,6 +67,24 @@ BASE_BACKOFF_S = 30
 DELIVER_PER_TICK = 5
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS outbox_dispositions (
+    source_table TEXT NOT NULL CHECK(source_table='outbox'),
+    event_id TEXT NOT NULL,
+    row_sha256 TEXT NOT NULL,
+    plan_sha256 TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition='expired-not-delivered'),
+    reason TEXT NOT NULL,
+    ruling_ref TEXT NOT NULL,
+    source_utc TEXT NOT NULL,
+    recorded_at REAL NOT NULL,
+    PRIMARY KEY(source_table,event_id)
+);
+CREATE TRIGGER IF NOT EXISTS outbox_dispositions_no_update
+ BEFORE UPDATE ON outbox_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS outbox_dispositions_no_delete
+ BEFORE DELETE ON outbox_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
 CREATE TABLE IF NOT EXISTS renewal_receipts (
     event_id TEXT PRIMARY KEY,
     last_received REAL,
@@ -179,6 +198,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS outbox_recovery_candidates ON outbox(emitter,item,created,event_id)"
                  " WHERE recovery_queued=0 AND delivered_at IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS verdict_recovery_candidates ON verdicts(emitter,recovery_at)")
+    try:
+        verify_dispositions(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -379,7 +403,7 @@ def queue_recoveries(conn: sqlite3.Connection, emitter: Emitter, limit: int = DE
             " LEFT JOIN recovery_outbox r ON r.emitter=o.emitter AND r.prior_event=o.event_id"
             " WHERE o.emitter=? AND o.recovery_queued=0 AND o.delivered_at IS NOT NULL"
             " AND v.recovery_at IS NOT NULL AND (v.tracked=0 OR v.verdict!=?)"
-            " AND r.event_id IS NULL ORDER BY o.created,o.event_id LIMIT ?",
+            " AND " + undisposed("o") + " AND r.event_id IS NULL ORDER BY o.created,o.event_id LIMIT ?",
             (emitter.label, emitter.to_verdict, limit)).fetchall()
         queued = []
         for prior_id, item, raw, generation, recovered_at, scope in rows:
@@ -475,11 +499,18 @@ def sink_setup_allowed(conn, sink, now, emitter, resolve_recovery):
     allowed = not resolve_recovery
     first = conn.execute(
         "SELECT delivery_scope FROM outbox WHERE emitter=? AND delivered_at IS NULL"
-        " AND next_attempt<=? ORDER BY created LIMIT 1", (emitter, now)).fetchone()
+        " AND " + undisposed("outbox") + " AND next_attempt<=? ORDER BY created LIMIT 1", (emitter, now)).fetchone()
     if first is not None:
         scope_fn = getattr(sink, "delivery_scope", None)
         scope = scope_fn() if scope_fn is not None else None
         allowed = first[0] is None or json.loads(first[0]) == scope
+    if first is None and conn.execute(
+            "SELECT 1 FROM outbox_dispositions d JOIN outbox o ON o.event_id=d.event_id"
+            " WHERE o.emitter=? LIMIT 1", (emitter,)).fetchone():
+        # Disposed work must not cause a receiver setup/budget write either.
+        allowed = allowed and bool(conn.execute(
+            "SELECT 1 FROM outbox WHERE emitter=? AND delivered_at IS NULL AND "
+            + undisposed("outbox") + " LIMIT 1", (emitter,)).fetchone())
     return allowed
 
 
@@ -511,7 +542,8 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     tables = ("outbox", "recovery_outbox") if resolve_recovery else ("outbox",)
     query = " UNION ALL ".join(
         f"SELECT event_id,payload,attempts,created,'{table}' AS source_table FROM {table}"
-        " WHERE emitter=? AND delivered_at IS NULL AND next_attempt<=?" for table in tables)
+        " WHERE emitter=? AND delivered_at IS NULL AND next_attempt<=? AND "
+        + (undisposed(table) if table == "outbox" else "1") for table in tables)
     args = [value for _ in tables for value in (emitter, now)] + [limit]
     rows = conn.execute(query + " ORDER BY created LIMIT ?", args).fetchall()
     ok = failed = 0
@@ -591,7 +623,7 @@ def renew_active(conn: sqlite3.Connection, sink: Sink, now: float, definition: E
         "LEFT JOIN renewal_receipts r ON r.event_id=o.event_id "
         "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=? "
         "AND v.item IN (SELECT value FROM json_each(?)) "
-        "AND o.delivered_at IS NOT NULL AND COALESCE(r.next_attempt,0)<=? "
+        "AND " + undisposed("o") + " AND o.delivered_at IS NOT NULL AND COALESCE(r.next_attempt,0)<=? "
         "AND COALESCE(r.last_received,o.delivered_at)<=? "
         "ORDER BY COALESCE(r.last_received,o.delivered_at) LIMIT ?",
         (definition.label, definition.to_verdict, json.dumps(sorted(positive)), now,
@@ -678,7 +710,8 @@ class Runner:
                 " AND NOT EXISTS (SELECT 1 FROM outbox prior WHERE"
                 f" prior.event_id=json_extract({table}.payload,'$.resolution_of')"
                 " AND prior.delivered_at IS NOT NULL) THEN MAX(next_attempt,?)"
-                f" ELSE next_attempt END) FROM {table} WHERE emitter=? AND delivered_at IS NULL",
+                f" ELSE next_attempt END) FROM {table} WHERE emitter=? AND delivered_at IS NULL AND "
+                + (undisposed(table) if table == "outbox" else "1"),
                 (now + 5, self.emitter.label)).fetchone()
             if row[0] is not None:
                 values.append(row[0])
@@ -747,7 +780,7 @@ class Runner:
     def _snapshot_values(self) -> dict:
         pending, oldest = self.conn.execute(
             "SELECT COUNT(*), MIN(created) FROM ("
-            " SELECT created FROM outbox WHERE emitter=? AND delivered_at IS NULL"
+            " SELECT created FROM outbox WHERE emitter=? AND delivered_at IS NULL AND " + undisposed("outbox") +
             " UNION ALL SELECT created FROM recovery_outbox WHERE emitter=? AND delivered_at IS NULL)",
             (self.emitter.label, self.emitter.label)).fetchone()
         delivered = self.conn.execute(
@@ -760,7 +793,10 @@ class Runner:
             "JOIN verdicts v ON v.last_event=o.event_id "
             "WHERE v.emitter=? AND v.tracked=1 AND v.verdict=?",
             (self.emitter.label,self.emitter.to_verdict)).fetchone()
-        return {"renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
+        disposed = self.conn.execute(
+            "SELECT COUNT(*) FROM outbox_dispositions d JOIN outbox o ON o.event_id=d.event_id"
+            " WHERE o.emitter=?", (self.emitter.label,)).fetchone()[0]
+        return {"disposed": disposed, "renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
                 "runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
                 "oldest_created": oldest, "delivered": delivered}
@@ -783,8 +819,244 @@ class Runner:
             f'chaski_emitter_renewal_failures{{emitter="{label}"}} {s["renewal_failures"]}',
             f'chaski_emitter_renewal_receipts{{emitter="{label}"}} {s["renewal_receipts"]}',
             f'chaski_emitter_outbox_pending{{emitter="{label}"}} {s["pending"]}',
+            f'chaski_emitter_outbox_disposed_total{{emitter="{label}"}} {s["disposed"]}',
             f'chaski_emitter_outbox_delivered_total{{emitter="{label}"}} {s["delivered"]}',
             f'chaski_emitter_outbox_oldest_pending_age_seconds{{emitter="{label}"}} '
             f'{(time.time() - oldest) if oldest else 0:.0f}',
         ]
         return lines
+
+
+DISPOSITION_PLAN = 'chaski-outbox-disposition/v1'
+
+
+def undisposed(alias):
+    """Fence by immutable event identity, even if a retained row later drifts.
+
+    The row fingerprint is independently verified at startup and apply. Matching
+    only the fingerprint here could accidentally release a changed row.
+    """
+    if alias not in ('outbox', 'o'):
+        raise ValueError('invalid outbox alias')
+    return ("NOT EXISTS (SELECT 1 FROM outbox_dispositions disposition WHERE "
+            f"disposition.source_table='outbox' AND disposition.event_id={alias}.event_id)")
+
+
+def disposition_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def disposition_row(conn, event_id):
+    cursor = conn.execute('SELECT * FROM outbox WHERE event_id=?', (event_id,))
+    row = cursor.fetchone()
+    return None if row is None else dict(zip((d[0] for d in cursor.description), row))
+
+
+def disposition_eligible(row):
+    if (row is None or row['delivered_at'] is not None or row['attempts'] != 0
+            or row['delivery_scope'] is not None or row['recovery_queued'] != 0):
+        raise ValueError('disposition requires an unbound never-attempted firing')
+    payload = json.loads(row['payload'])
+    if not isinstance(payload, dict) or 'prior' in payload or 'resolution_of' in payload:
+        raise ValueError('recovery dispositions require separate adjudication')
+
+
+def verify_dispositions(conn):
+    """Never reinterpret a disposition as a delivery receipt."""
+    rows = conn.execute('SELECT event_id,row_sha256 FROM outbox_dispositions').fetchall()
+    for identity, expected in rows:
+        row = disposition_row(conn, identity)
+        disposition_eligible(row)
+        if disposition_digest(row) != expected:
+            raise ValueError('disposed row changed or disappeared; consumer remains fenced')
+    return len(rows)
+
+
+def disposition_ledger_present(conn):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox_dispositions'"
+    ).fetchone() is not None
+
+
+def disposition_population(conn, emitter, cutoff, limit, replay_digest=None):
+    """New plans exclude receipts; replay includes only this exact plan's receipts.
+
+    A first read-only plan may inspect a legacy database before schema adoption.
+    Missing ledger is empty only after a successful exact schema read.
+    """
+    join, receipt_filter, receipt_params = '', '', ()
+    if disposition_ledger_present(conn):
+        join = (" LEFT JOIN outbox_dispositions d ON d.source_table='outbox' "
+                'AND d.event_id=o.event_id')
+        receipt_filter = 'AND (d.event_id IS NULL OR d.plan_sha256=?) '
+        receipt_params = (replay_digest,)
+    return conn.execute(
+        'SELECT o.event_id FROM outbox o' + join +
+        ' WHERE o.emitter=? AND o.created<=? AND o.delivered_at IS NULL '
+        'AND o.attempts=0 AND o.delivery_scope IS NULL AND o.recovery_queued=0 ' +
+        receipt_filter + 'ORDER BY o.event_id LIMIT ?',
+        (emitter, cutoff, *receipt_params, limit)).fetchall()
+
+
+def inspect_disposition_plan(conn, plan):
+    fields = {'schema', 'emitter', 'created_before', 'expected_count', 'reason',
+              'ruling_ref', 'source_utc', 'rows'}
+    if not isinstance(plan, dict) or set(plan) != fields or plan['schema'] != DISPOSITION_PLAN:
+        raise ValueError('invalid disposition plan')
+    if (type(plan['expected_count']) is not int or not 1 <= plan['expected_count'] <= 10000
+            or not isinstance(plan['rows'], list) or len(plan['rows']) != plan['expected_count']):
+        raise ValueError('invalid exact population bound')
+    for field in ('emitter', 'reason', 'ruling_ref', 'source_utc'):
+        if not isinstance(plan[field], str) or not plan[field].strip() or len(plan[field]) > 4096:
+            raise ValueError('missing disposition provenance')
+    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z', plan['source_utc']):
+        raise ValueError('source UTC must be explicit')
+    if type(plan['created_before']) not in (int, float) or not math.isfinite(plan['created_before']):
+        raise ValueError('invalid creation cutoff')
+    identities = set()
+    for entry in plan['rows']:
+        if (not isinstance(entry, dict) or set(entry) != {'event_id', 'row_sha256'}
+                or not isinstance(entry['event_id'], str) or not entry['event_id']
+                or not isinstance(entry['row_sha256'], str)
+                or not re.fullmatch('[0-9a-f]{64}', entry['row_sha256'])
+                or entry['event_id'] in identities):
+            raise ValueError('invalid or duplicate row identity')
+        identities.add(entry['event_id'])
+        row = disposition_row(conn, entry['event_id'])
+        disposition_eligible(row)
+        if (row['emitter'] != plan['emitter'] or row['created'] > plan['created_before']
+                or disposition_digest(row) != entry['row_sha256']):
+            raise ValueError('exact reviewed row changed or foreign scope')
+    digest = disposition_digest(plan)
+    if disposition_ledger_present(conn):
+        for entry in plan['rows']:
+            prior = conn.execute(
+                "SELECT plan_sha256 FROM outbox_dispositions WHERE source_table='outbox' AND event_id=?",
+                (entry['event_id'],)).fetchone()
+            if prior is not None and prior[0] != digest:
+                raise ValueError('conflicting append-only disposition')
+    population = {row[0] for row in disposition_population(
+        conn, plan['emitter'], plan['created_before'], plan['expected_count'] + 1, digest)}
+    if population != identities:
+        raise ValueError('exact reviewed population changed')
+    return digest
+
+
+def apply_disposition_plan(conn, plan, expected_sha256):
+    """Append atomically under the caller's exclusive consumer custody.
+
+    The ruling reference records a caller declaration, not authentication or a
+    replacement for the deployment's operator admission and quiesced handoff.
+    """
+    if conn.in_transaction:
+        raise ValueError('disposition requires its own transaction')
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        digest = inspect_disposition_plan(conn, plan)
+        if digest != expected_sha256:
+            raise ValueError('reviewed plan hash mismatch')
+        verify_dispositions(conn)
+        recorded = time.time()
+        for entry in plan['rows']:
+            receipt = (entry['row_sha256'], digest, 'expired-not-delivered', plan['reason'],
+                       plan['ruling_ref'], plan['source_utc'])
+            prior = conn.execute(
+                'SELECT row_sha256,plan_sha256,disposition,reason,ruling_ref,source_utc '
+                "FROM outbox_dispositions WHERE source_table='outbox' AND event_id=?",
+                (entry['event_id'],)).fetchone()
+            if prior is not None:
+                if tuple(prior) != receipt:
+                    raise ValueError('conflicting append-only disposition')
+                continue
+            conn.execute('INSERT INTO outbox_dispositions VALUES (?,?,?,?,?,?,?,?,?)',
+                         ('outbox', entry['event_id'], *receipt, recorded))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return {'plan_sha256': digest, 'disposed_rows': len(plan['rows']),
+            'disposition': 'expired-not-delivered'}
+
+
+def disposition_main(argv=None):
+    """Supported offline plan/apply/list/verify; never opens a sink or network.
+
+    # arming: agent-invoked — exact reviewed plan and exclusive consumer lease.
+    """
+    import argparse
+    import datetime
+    import os
+    from consumer_lease import ConsumerLease
+    from chaski_version import add_version_argument
+    ap = argparse.ArgumentParser(description='Append-only expiry; original rows remain undelivered')
+    add_version_argument(ap, 'chaski-outbox-disposition')
+    ap.add_argument('action', choices=('plan', 'apply', 'list', 'verify'))
+    ap.add_argument('--db', type=Path, required=True)
+    ap.add_argument('--cursor', type=Path)
+    ap.add_argument('--plan', type=Path)
+    ap.add_argument('--expected-plan-sha256')
+    ap.add_argument('--emitter')
+    ap.add_argument('--created-before', type=float)
+    ap.add_argument('--expected-count', type=int)
+    ap.add_argument('--reason')
+    ap.add_argument('--ruling-ref')
+    args = ap.parse_args(argv)
+    if not args.db.is_file():
+        ap.error('existing inbox required; no initialization')
+    if args.action == 'apply':
+        if not args.cursor or not args.cursor.is_file() or not args.plan or not args.expected_plan_sha256:
+            ap.error('apply requires existing cursor custody, reviewed plan and exact hash')
+        if args.plan.stat().st_size > 4 * 1024 * 1024:
+            ap.error('plan exceeds 4MiB bound')
+        plan = json.loads(args.plan.read_text())
+        with ConsumerLease(args.cursor, args.db):
+            conn = connect(args.db)
+            try:
+                result = apply_disposition_plan(conn, plan, args.expected_plan_sha256)
+            finally:
+                conn.close()
+    else:
+        conn = sqlite3.connect(args.db.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            if args.action == 'plan':
+                if not all((args.emitter, args.plan, args.reason, args.ruling_ref)) or args.created_before is None:
+                    ap.error('plan requires emitter, cutoff, count, reason, ruling ref and output path')
+                if type(args.expected_count) is not int or not 1 <= args.expected_count <= 10000:
+                    ap.error('exact count must be 1..10000')
+                rows = disposition_population(
+                    conn, args.emitter, args.created_before, args.expected_count + 1)
+                if len(rows) != args.expected_count:
+                    raise ValueError('review population count changed')
+                plan = {'schema': DISPOSITION_PLAN, 'emitter': args.emitter,
+                        'created_before': args.created_before, 'expected_count': args.expected_count,
+                        'reason': args.reason, 'ruling_ref': args.ruling_ref,
+                        'source_utc': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+                        'rows': [{'event_id': row[0], 'row_sha256': disposition_digest(disposition_row(conn, row[0]))}
+                                 for row in rows]}
+                digest = inspect_disposition_plan(conn, plan)
+                with os.fdopen(os.open(args.plan, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
+                    json.dump(plan, output, indent=2)
+                result = {'plan_sha256': digest, 'rows': len(rows), 'status': 'dry-run; no inbox mutation'}
+            else:
+                count = verify_dispositions(conn)
+                result = {'verified_dispositions': count}
+                if args.action == 'list':
+                    result['receipts'] = [dict(zip(('event_id', 'row_sha256', 'plan_sha256', 'disposition',
+                                                   'reason', 'ruling_ref', 'source_utc', 'recorded_at'), row))
+                                          for row in conn.execute(
+                                              'SELECT event_id,row_sha256,plan_sha256,disposition,reason,'
+                                              'ruling_ref,source_utc,recorded_at FROM outbox_dispositions '
+                                              'ORDER BY event_id LIMIT 10001')]
+                    if len(result['receipts']) > 10000:
+                        raise ValueError('list bound exceeded; no complete listing')
+        finally:
+            conn.close()
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(disposition_main())
