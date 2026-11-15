@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/intigraph/chaski/compare/v0.7.0...v0.7.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* use published vocabulary in graph writers and dual readers ([#71](https://github.com/intigraph/chaski/issues/71)) ([82cef2f](https://github.com/intigraph/chaski/commit/82cef2fe877d9aa7e3504382bf7a4cb0ed0b14a0))
+
 ## [0.7.0](https://github.com/intigraph/chaski/compare/v0.6.0...v0.7.0) (2026-11-13)
 
 
