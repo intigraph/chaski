@@ -21,12 +21,14 @@ from scheduled_receiver import ExecutionScope
 from weekly_projection import WeeklyScheduledProjection
 
 SCHEMA = 'https://schema.org/'
-QUECHUA = 'https://scbrown.github.io/quechua/ns#'
+QUECHUA = 'https://w3id.org/intigraph/quechua/ns#'
+LEGACY_QUECHUA = 'https://scbrown.github.io/quechua/ns#'  # read compatibility
 TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type'
 ATTRIBUTES = [TYPE, *[SCHEMA+x for x in ('name', 'identifier', 'location', 'target',
     'potentialAction', 'eventSchedule', 'repeatFrequency', 'scheduleTimezone', 'startDate',
     'byDay', 'startTime')],
-    QUECHUA+'sourceKind', QUECHUA+'owner', QUECHUA+'enabled']
+    *[namespace+name for namespace in (QUECHUA, LEGACY_QUECHUA)
+      for name in ('sourceKind', 'owner', 'enabled')]]
 
 
 def _pairs(pairs):

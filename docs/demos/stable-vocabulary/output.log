@@ -1,0 +1,6 @@
+Script started on 2026-11-13 12:38:15-05:00 [COMMAND="python3 docs/demos/stable-vocabulary/demo.py" <not executed on terminal>]
+base: instance-base vocabulary present=True; firing=urn:fixture:firing-64ff47bd29c61b7f94725b397f331d54
+candidate: instance-base vocabulary present=False; firing=urn:fixture:firing-64ff47bd29c61b7f94725b397f331d54
+PASS: identical instance identity; unknown vocabulary refuses without a fallback.
+
+Script done on 2026-11-13 12:38:15-05:00 [COMMAND_EXIT_CODE="0"]

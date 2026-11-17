@@ -29,12 +29,25 @@ import re
 import socket
 import urllib.request
 
+# Instance identity stays deployment-selected until its separate migration.
 NS = "http://aegis.gastown.local/ontology/"
-# The quechua twin of the TERMS this sink reads (aegis-9dpcta). Only terms move:
-# firing, reaction and focus IRIs stay under NS, because instance identity does
-# not change in the transition. The served quipu does not honour
-# owl:equivalentClass on reads, so the read-back names both term IRIs itself.
-QUECHUA_NS = "https://scbrown.github.io/quechua/ns#"
+QUECHUA_NS = "https://scbrown.github.io/quechua/ns#"  # historical read alias
+CORE = "https://w3id.org/intigraph/camayoc/core/ns#"
+QUIPU = "https://w3id.org/intigraph/quipu/ns#"
+QUECHUA = "https://w3id.org/intigraph/quechua/ns#"
+# ownership.json SHA256 a389be53b74259d0c515ff6db16d602474dc5fe38dc6cc47f0f54a2d1347d34e.
+_VOCABULARY = {**{name: QUIPU + name for name in
+    ("Reaction", "ReactionFiring", "owner", "schedule", "severity")},
+    **{name: CORE + name for name in ("action", "condition", "eventId", "eventTypes",
+        "firedBy", "focus", "startedAt", "triggerKind", "resolvedAt")}}
+VOCABULARY_VERSION = "intigraph-owned-a389be53/v1"
+
+
+def term(name):
+    """An exact published vocabulary owner; never use the instance base."""
+    return _VOCABULARY[name]
+
+
 USER_AGENT = "chaski/0.2"
 # A caller KIND of its own, so the emitter's writes are separable from chaski's
 # rule reads in quipu's per-caller accounting.
@@ -120,16 +133,16 @@ class QuipuFiringSink:
         kind = r.get("trigger_kind", "schedule")
         if kind not in {"schedule", "event"}:
             raise ValueError("reaction trigger kind must be schedule or event")
-        event_types = (f"  <{self.ns}eventTypes> {_lit(r['event_types'])} ;\n"
+        event_types = (f"  <{term('eventTypes')}> {_lit(r['event_types'])} ;\n"
                        if kind == "event" else "")
         return (
-            f"<{self.reaction_iri()}> a <{self.ns}Reaction> ;\n"
+            f"<{self.reaction_iri()}> a <{term('Reaction')}> ;\n"
             f"  <http://www.w3.org/2000/01/rdf-schema#label> {_lit(r['label'])} ;\n"
-            f"  <{self.ns}triggerKind> {_lit(kind)} ; <{self.ns}schedule> {_lit(r['schedule'])} ;\n"
+            f"  <{term('triggerKind')}> {_lit(kind)} ; <{term('schedule')}> {_lit(r['schedule'])} ;\n"
             f"{event_types}"
-            f"  <{self.ns}condition> {_lit(r['condition'])} ;\n"
-            f"  <{self.ns}severity> {_lit(r['severity'])} ; <{self.ns}action> {actions} ;\n"
-            f"  <{self.ns}owner> {_lit(r['owner'])} ;\n"
+            f"  <{term('condition')}> {_lit(r['condition'])} ;\n"
+            f"  <{term('severity')}> {_lit(r['severity'])} ; <{term('action')}> {actions} ;\n"
+            f"  <{term('owner')}> {_lit(r['owner'])} ;\n"
             f"  <http://www.w3.org/2000/01/rdf-schema#comment> {_lit(r['comment'])} .\n"
         )
 
@@ -138,12 +151,16 @@ class QuipuFiringSink:
         started = started.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         focus = event["item"] if "://" in event["item"] else f"{self.ns}{event['item']}"
         return (
-            f"<{firing_iri(self.reaction['label'], event['event_id'], self.ns)}> a <{self.ns}ReactionFiring> ;\n"
-            f"  <{self.ns}firedBy> <{self.reaction_iri()}> ;\n"
-            f"  <{self.ns}focus> <{focus}> ;\n"
-            f"  <{self.ns}startedAt> \"{started}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;\n"
-            f"  <{self.ns}eventId> {_lit(event['event_id'])} .\n"
+            f"<{firing_iri(self.reaction['label'], event['event_id'], self.ns)}> a <{term('ReactionFiring')}> ;\n"
+            f"  <{term('firedBy')}> <{self.reaction_iri()}> ;\n"
+            f"  <{term('focus')}> <{focus}> ;\n"
+            f"  <{term('startedAt')}> \"{started}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;\n"
+            f"  <{term('eventId')}> {_lit(event['event_id'])} .\n"
         )
+
+    def _term_aliases(self, name):
+        return tuple(dict.fromkeys((term(name), NS + name, self.ns + name,
+                                    QUECHUA_NS + name, QUECHUA + name)))
 
     def _expand(self, term):
         """Expand a compact IRI from a quipu /query answer to a full IRI.
@@ -166,21 +183,21 @@ class QuipuFiringSink:
 
     def _received(self, event: dict) -> bool:
         iri = firing_iri(self.reaction["label"], event["event_id"], self.ns)
-        # Legacy OR quechua eventId, as a UNION of two single bound patterns (one
-        # request). Not a (p1|p2) path: the served quipu drops literal objects
-        # there (aegis-sxlptn), and eventId is a literal.
-        q = (f"SELECT ?e WHERE {{ {{ <{iri}> <{self.ns}eventId> ?e }} UNION "
-             f"{{ <{iri}> <{QUECHUA_NS}eventId> ?e }} }}")
+        # Explicit UNION preserves literal values on older native readers.
+        alternatives = [f"{{ <{iri}> <{predicate}> ?e }}"
+                        for predicate in self._term_aliases("eventId")]
+        q = "SELECT ?e WHERE { " + " UNION ".join(alternatives) + " }"
         out = self._post("/query", {"query": q})
         rows = out.get("rows")
-        if rows is None:
+        if out.get("error") or not isinstance(rows, list) or out.get("truncated", False) is not False:
             raise ConnectionError(f"read-back returned no rows field: {str(out)[:200]}")
-        return any(str(r.get("e")) == event["event_id"] for r in rows)
+        return len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("e") == event["event_id"]
 
     def setup_present(self) -> bool:
         """Direct type read-back for a one-shot's retained setup receipt."""
-        query = (f"SELECT ?type WHERE {{ <{self.reaction_iri()}> a ?type . "
-                 f"FILTER(?type = <{self.ns}Reaction>) }}")
+        types = ", ".join("<" + value + ">" for value in self._term_aliases("Reaction"))
+        query = (f"SELECT (STR(?kind) AS ?type) WHERE {{ <{self.reaction_iri()}> a ?kind . "
+                 f"FILTER(?kind IN ({types})) }}")
         req = urllib.request.Request(
             self.base + "/query", data=json.dumps({"query": query}).encode(),
             headers={"Content-Type": "application/json", "User-Agent": USER_AGENT,
@@ -190,8 +207,8 @@ class QuipuFiringSink:
         rows = out.get("rows")
         if out.get("error") or out.get("truncated") or not isinstance(rows, list):
             raise ConnectionError("setup read-back UNKNOWN")
-        expected = self.ns + "Reaction"
-        if any(not isinstance(row, dict) or self._expand(row.get("type")) != expected for row in rows):
+        expected = self._term_aliases("Reaction")
+        if any(not isinstance(row, dict) or self._expand(row.get("type")) not in expected for row in rows):
             raise ConnectionError("setup read-back has unexpected type")
         return bool(rows)
 
@@ -216,33 +233,35 @@ class QuipuFiringSink:
 
     def delivery_scope(self) -> dict:
         return {"kind": "quipu", "base": self.base, "namespace": self.ns,
-                "reaction": self.reaction["label"]}
+                "reaction": self.reaction["label"], "vocabulary": VOCABULARY_VERSION}
 
     def prepare_recovery(self, event: dict) -> dict:
         prior = event["prior"]
         if prior["emitter"] != self.reaction["label"]:
             raise ConnectionError("prior graph reaction identity changed")
         iri = firing_iri(prior["emitter"], prior["event_id"], self.ns)
-        out = self._post("/query", {"query": f"SELECT ?p ?e WHERE {{ <{iri}> ?p ?e }}"})
+        out = self._post("/query", {"query": f"SELECT (STR(?predicate) AS ?p) ?e WHERE {{ <{iri}> ?predicate ?e }}"})
         rows = out.get("rows")
-        if not isinstance(rows, list):
+        if (out.get("error") or out.get("truncated", False) is not False
+                or not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
             raise ConnectionError("prior firing read-back unavailable")
-        predicates = {self.ns + "eventId": self.ns, QUECHUA_NS + "eventId": QUECHUA_NS}
+        predicates = self._term_aliases("eventId")
         matches = [r for r in rows if self._expand(r.get("p")) in predicates]
         if len(matches) != 1 or matches[0].get("e") != prior["event_id"]:
             raise ConnectionError("missing or ambiguous prior graph firing")
-        namespace = predicates[self._expand(matches[0]["p"])]
-        prior_ends = [_datetime_value(r["e"]) for r in rows
-                      if self._expand(r.get("p")) == namespace + "resolvedAt"]
-        receipt = {"iri": iri, "predicate": namespace + "resolvedAt",
+        prior_ends = [(self._expand(r.get("p")), _datetime_value(r["e"])) for r in rows
+                      if self._expand(r.get("p")) in self._term_aliases("resolvedAt")]
+        receipt = {"iri": iri, "predicate": term("resolvedAt"),
                    "delivery_scope": self.delivery_scope()}
         if prior_ends:
             if len(prior_ends) != 1:
                 raise ConnectionError("ambiguous prior graph recovery")
-            ended = dt.datetime.fromisoformat(prior_ends[0].replace("Z", "+00:00"))
+            predicate, prior_end = prior_ends[0]
+            ended = dt.datetime.fromisoformat(prior_end.replace("Z", "+00:00"))
             if ended.tzinfo is None or ended.timestamp() > event["resolved_at"]:
                 raise ConnectionError("prior graph recovery is not authoritative")
-            receipt["already_ended"] = prior_ends[0]
+            receipt["predicate"] = predicate  # read-only reuse of an already completed legacy effect
+            receipt["already_ended"] = prior_end
         return receipt
 
     def resolve(self, event: dict) -> None:
