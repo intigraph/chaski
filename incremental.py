@@ -135,16 +135,49 @@ class AdapterBudget:
         self._last = now
 
 
+class NotAdmitted(Exception):
+    """The global request budget did not admit this call now (not a failure)."""
+
+
 class ChangeRunner(Runner):
-    def __init__(self, emitter, conn, sink, budget=None, adapter_budget=None):
+    # Defaults for runners built without __init__ (fixtures); __init__ overrides.
+    request_budget = None
+    call_requests = 40
+    max_batch = 50
+    paused = False
+    suspended = False
+    batch = BATCH
+    cost_per_item = None
+    adapter_budget = None
+
+    def __init__(self, emitter, conn, sink, budget=None, adapter_budget=None,
+                 request_budget=None, call_requests=40, max_batch=50):
         self.emitter = emitter
         self.adapter_budget = adapter_budget
+        # aegis-ssvr C1: with a global request budget every adapter call pre-reserves
+        # `call_requests` tokens and passes that hard cap to the adapter; the bucket,
+        # not the per-emitter drain interval, bounds the load.
+        self.request_budget = request_budget
+        self.call_requests = call_requests
+        self.max_batch = max_batch
+        self.paused = False      # set by the reactor while reconcile mode discovers
+        self.suspended = False   # an adapter broke its cost contract; UNKNOWN until restart
+        self.batch = BATCH
+        self.cost_per_item = None
         conn.executescript(SCHEMA)
         prepare_inbox_projection(conn)
         self.subscription = call(emitter)
         self.attributes = strings(self.subscription.get("attributes"))
         self.graphs = strings(self.subscription.get("graphs"))
         self.types = strings(self.subscription.get("types", []))
+        if request_budget is not None:
+            if self.subscription.get("budget_cap") != 1:
+                raise ProtocolError(f"emitter {emitter.label}: the global request budget needs an"
+                                    " adapter that declares budget_cap (a hard request cap)")
+            if type(call_requests) is not int or not 1 <= call_requests <= request_budget.burst:
+                raise ProtocolError("call_requests must be 1..burst")
+            if type(max_batch) is not int or max_batch < 1:
+                raise ProtocolError("max_batch must be a positive integer")
         self.retry_at = 0.0
         self.last_drain = float("-inf")
         self._reconcile_on_new_subscription(conn, emitter.label)
@@ -181,7 +214,25 @@ class ChangeRunner(Runner):
             isinstance(record.get(k), dict) and record[k].get("ref") in self.types
             for k in ("value", "old_value"))
 
+    def _call(self, cls, request, now):
+        """One adapter call, pre-reserved against the global budget when it exists."""
+        rb = self.request_budget
+        if rb is None:
+            return call(self.emitter, request)
+        if not rb.try_reserve(cls, self.call_requests, now):
+            raise NotAdmitted()
+        # A failed call keeps its whole reservation: an error storm stays bounded.
+        out = call(self.emitter, dict(request, budget={"max_requests": self.call_requests}))
+        before = rb.violations.get(self.emitter.label, 0)
+        self._last_cost = rb.settle(self.call_requests, out.get("cost"), self.emitter.label)
+        if rb.violations.get(self.emitter.label, 0) > before:
+            self.suspended = True
+            raise ProtocolError(f"emitter {self.emitter.label} broke its request-cost contract; suspended")
+        return out
+
     def reconcile(self, now):
+        if self.request_budget is not None:
+            return  # the Reconciler owns discovery under the global budget (aegis-ssvr C1)
         row = self.conn.execute("SELECT last_success FROM adapter_reconcile WHERE emitter=?",
                                 (self.emitter.label,)).fetchone()
         if row and now - row[0] < self.emitter.interval_s:
@@ -215,9 +266,14 @@ class ChangeRunner(Runner):
             "(SELECT +entity FROM change_inbox_frontier WHERE emitter=? "
             " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
-        if not pending:
+        if not pending or self.paused:
             return False
-        items = strings(call(self.emitter, {"now": now, "route": [json.loads(r[2]) for r in pending]}).get("items"))
+        from reconcile import LIVE
+        try:
+            out = self._call(LIVE, {"now": now, "route": [json.loads(r[2]) for r in pending]}, now)
+        except NotAdmitted:
+            return False
+        items = strings(out.get("items"))
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES (?,?,?,0)"
@@ -233,13 +289,24 @@ class ChangeRunner(Runner):
 
     def evaluate_pending(self, now):
         label = self.emitter.label
-        items = [r[0] for r in self.conn.execute(
-            "SELECT item FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
-            (label, now, BATCH))]
-        if not items:
+        limit = self.batch if self.request_budget is not None else BATCH
+        selected = self.conn.execute(
+            "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
+            (label, now, limit)).fetchall()
+        items = [r[0] for r in selected]
+        if not items or self.paused:
             return False
-        result = call(self.emitter, {"now": now, "items": items,
-                                    "changes": []})
+        from reconcile import LIVE, RECONCILE
+        # Reconcile-queued work (priority 2) runs below live changes and natural deadlines.
+        cls = RECONCILE if all(r[1] == 2 for r in selected) else LIVE
+        try:
+            result = self._call(cls, {"now": now, "items": items, "changes": []}, now)
+        except NotAdmitted:
+            return False
+        except Exception:
+            if self.request_budget is not None:
+                self.batch = max(1, self.batch // 2)  # e.g. the batch hit the hard cap
+            raise
         scope = strings(result.get("scope"))
         records, deadlines = result.get("records"), result.get("next_checks")
         if not isinstance(records, list) or not isinstance(deadlines, dict) or not set(items) <= scope:
@@ -262,16 +329,31 @@ class ChangeRunner(Runner):
         self.queued_total += len(queued)
         self.runs["ok"] += 1
         self.last_success = now
+        if self.request_budget is not None:
+            self._adapt_batch(len(items))
         return True
+
+    def _adapt_batch(self, count):
+        """Size the next batch so its expected cost fits ~80% of the hard cap."""
+        per = max(self._last_cost / count, 0.01)
+        self.cost_per_item = per if self.cost_per_item is None else 0.7 * self.cost_per_item + 0.3 * per
+        self.batch = max(1, min(self.max_batch, int(self.call_requests * 0.8 // self.cost_per_item)))
 
     def _drained(self, now):
         self.last_drain = now
         if self.adapter_budget is not None:
             self.adapter_budget.spend(now)
 
+    def _admitted(self, now):
+        if now < self.retry_at:
+            return False
+        if self.request_budget is not None:
+            return not self.suspended   # the bucket bounds the cadence
+        return (now >= self.last_drain + self.emitter.drain_interval_s
+                and (self.adapter_budget is None or self.adapter_budget.ready(now)))
+
     def tick(self, now):
-        if (now >= self.retry_at and now >= self.last_drain + self.emitter.drain_interval_s
-                and (self.adapter_budget is None or self.adapter_budget.ready(now))):
+        if self._admitted(now):
             try:
                 self.reconcile(now)
                 # Only a tick that actually ran the adapter starts the drain bound.
@@ -294,6 +376,8 @@ class ChangeRunner(Runner):
         row = self.conn.execute('SELECT last_success FROM adapter_reconcile WHERE emitter=?',
                                 (label,)).fetchone()
         source_due = row[0] + self.emitter.interval_s if row else now
+        if self.request_budget is not None:
+            source_due = now + 86400  # discovery belongs to the Reconciler
         deadline = self.conn.execute('SELECT MIN(due) FROM adapter_deadlines WHERE emitter=?',
                                      (label,)).fetchone()[0]
         if deadline is not None:
@@ -304,8 +388,13 @@ class ChangeRunner(Runner):
             source_due = now
         # aegis-ssvr: a backlog or past-due deadline must not mean back-to-back
         # adapter runs; bound the drain cadence so quipu load stays bounded.
-        source_due = max(source_due, self.retry_at, self.last_drain + self.emitter.drain_interval_s,
-                         self.adapter_budget.due() if self.adapter_budget is not None else source_due)
+        if self.request_budget is not None:
+            source_due = max(source_due, self.retry_at, self.request_budget.due(self.call_requests, now))
+            if self.suspended or self.paused:
+                source_due = max(source_due, now + 60)
+        else:
+            source_due = max(source_due, self.retry_at, self.last_drain + self.emitter.drain_interval_s,
+                             self.adapter_budget.due() if self.adapter_budget is not None else source_due)
         obligations = [source_due]
         for due in (self.delivery_due(now), self.setup_due(now)):
             if due is not None:
@@ -383,6 +472,7 @@ class ChangeFeed:
         self.cursor_tx = -1  # UNKNOWN until a durable page commit is observed
         self.poll_events_received = 0
         self.dirty = set()
+        self.request_budget = None   # aegis-ssvr C1: each polled page costs one request
 
     def take_dirty(self):
         dirty, self.dirty = self.dirty, set()
@@ -396,6 +486,11 @@ class ChangeFeed:
                 break
 
     def _page(self):
+        if self.request_budget is not None:
+            import time
+            from reconcile import FEED
+            if not self.request_budget.try_reserve(FEED, 1, time.time()):
+                return False
         try:
             row = self.conn.execute("SELECT tx FROM change_cursor WHERE id=1").fetchone()
             # Tail before initial discovery. Subsequent writes remain after the
