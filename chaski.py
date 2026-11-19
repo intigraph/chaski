@@ -442,6 +442,9 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
             ttl = d["sink"]["alertmanager"].get("ttl_s", 86400)
             if type(ttl) is not int or not parse_duration(d["schedule"]) <= renew < ttl:
                 raise RuleError("renewal interval must fit schedule and finite alert TTL")
+        drain = d.get("drain_interval_s", 300)
+        if type(drain) is not int or not 0 <= drain <= 86400:
+            raise RuleError("drain_interval_s must be an integer 0..86400")
         recovery = d.get("resolve_recovery", False)
         if not isinstance(recovery, bool) or (recovery and ("command" in kinds or d.get("trigger") == "external")):
             raise RuleError("recovery must be boolean and requires a verdict emitter without a command sink")
@@ -457,7 +460,7 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                             resolve_recovery=recovery,
                             change_driven=d.get("trigger", "schedule") == "changes",
                             externally_triggered=d.get("trigger", "schedule") == "external",
-                            renew_interval_s=renew)
+                            renew_interval_s=renew, drain_interval_s=drain)
         if d.get("trigger", "schedule") not in {"schedule", "changes", "external"}:
             raise RuleError("emitter trigger must be schedule, changes or external")
         if e.externally_triggered and d.get("baseline_emits") is not True:

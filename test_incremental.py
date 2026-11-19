@@ -33,7 +33,7 @@ def setup(tmp_path, monkeypatch):
         scope = set(request["items"]) | {c["entity"] for c in request["changes"]}
         return {"scope": list(scope), "records": [record(i) for i in scope], "next_checks": {i: None for i in scope}}
     monkeypatch.setattr(inc, "call", adapter)
-    e = Emitter("e", ["unused"], 86400, "owner", change_driven=True)
+    e = Emitter("e", ["unused"], 86400, "owner", change_driven=True, drain_interval_s=0)
     runner = inc.ChangeRunner(e, conn, Sink())
     yield conn, e, runner, calls
     conn.close()
@@ -591,3 +591,30 @@ def test_projection_migration_failure_is_atomic(tmp_path, monkeypatch):
         assert conn.execute("SELECT pending FROM change_inbox_counts WHERE emitter='e'").fetchone() == (1,)
     finally:
         conn.close()
+
+
+def test_backlog_drain_is_bounded_by_drain_interval(setup):
+    """aegis-ssvr: a change backlog must not mean back-to-back adapter runs."""
+    conn, e, runner, calls = setup
+    runner.emitter = Emitter("e", ["unused"], 86400, "owner", change_driven=True, drain_interval_s=300)
+    runner.tick(100)                                  # initial reconcile + evaluate
+    for tx in range(2, 12):
+        conn.execute("INSERT INTO change_inbox VALUES ('e',?,0,?)", (tx, json.dumps(change())))
+    calls.clear()
+    runner.tick(150)                                  # inside the bound: no adapter call
+    assert calls == []
+    assert runner.next_wakeup(150) >= 400             # pending does not mean "now"
+    runner.tick(400)
+    assert calls                                      # bound elapsed: drains again
+    assert runner.next_wakeup(400) >= 700
+
+
+def test_idle_tick_does_not_start_the_drain_bound(setup):
+    conn, e, runner, calls = setup
+    runner.emitter = Emitter("e", ["unused"], 86400, "owner", change_driven=True, drain_interval_s=300)
+    runner.tick(100)
+    runner.tick(101)                                  # nothing due: must not delay the next deadline
+    conn.execute("INSERT INTO adapter_deadlines (emitter,item,due) VALUES ('e','a',102)")
+    calls.clear()
+    runner.tick(401)
+    assert calls and calls[-1]["items"] == ["a"]

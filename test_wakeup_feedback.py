@@ -26,10 +26,12 @@ def test_disabled_recovery_consumer_retains_debt_without_busy_loop():
 
 
 def test_incremental_consumer_retries_setup_despite_daily_reconcile():
+    # aegis-ssvr: a refused setup write still retries without waiting for the
+    # daily reconcile, but backs off (30 s, then 60 s) instead of every 5 s pass.
     result = probe("setup")
-    assert result["setup_attempts"] == 12
-    assert result["turns"] == 12
-    assert result["next_wait"] == 5
+    assert result["setup_attempts"] == 2
+    assert result["turns"] == 2
+    assert result["next_wait"] == 60
     assert result["retained_reconcile"] == 100
     assert result["outbox_count"] == 0
 
@@ -78,3 +80,25 @@ def test_setup_wakeup_respects_recovery_policy_and_bound_receiver():
     conn.execute('UPDATE outbox SET delivery_scope=?', ('{"receiver":"original"}',))
     assert runner.setup_due(102) is None
     conn.close()
+
+
+def test_setup_backoff_doubles_caps_and_resets_on_success():
+    em._SETUP_FAILURES.clear()
+    delays = [em._setup_failed("x", 1000.0) for _ in range(9)]
+    assert delays[:4] == [30, 60, 120, 240]
+    assert delays[-1] == em.SETUP_BACKOFF_MAX_S == 3600
+    assert em.setup_retry_at("x") == 1000.0 + 3600
+
+    class Sink:
+        attempts = 0
+        def setup_pending(self):
+            return True
+        def setup(self):
+            Sink.attempts += 1
+    conn = em.connect(":memory:")
+    e = em.Emitter("y", [], 3600, "fixture")
+    em._setup_failed("y", 100.0)                     # retry_at = 130
+    assert em.deliver_pending(conn, Sink(), 120.0, "y") == (0, 0)
+    assert Sink.attempts == 0                        # still backing off
+    em.deliver_pending(conn, Sink(), 131.0, "y")
+    assert Sink.attempts == 1 and "y" not in em._SETUP_FAILURES   # success resets

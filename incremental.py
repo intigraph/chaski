@@ -124,6 +124,7 @@ class ChangeRunner(Runner):
         self.graphs = strings(self.subscription.get("graphs"))
         self.types = strings(self.subscription.get("types", []))
         self.retry_at = 0.0
+        self.last_drain = float("-inf")
         self._reconcile_on_new_subscription(conn, emitter.label)
         super().__init__(emitter, conn, sink, budget)
 
@@ -193,7 +194,7 @@ class ChangeRunner(Runner):
             " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
         if not pending:
-            return
+            return False
         items = strings(call(self.emitter, {"now": now, "route": [json.loads(r[2]) for r in pending]}).get("items"))
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -206,6 +207,7 @@ class ChangeRunner(Runner):
         except BaseException:
             self.conn.execute("ROLLBACK")
             raise
+        return True
 
     def evaluate_pending(self, now):
         label = self.emitter.label
@@ -213,7 +215,7 @@ class ChangeRunner(Runner):
             "SELECT item FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, BATCH))]
         if not items:
-            return
+            return False
         result = call(self.emitter, {"now": now, "items": items,
                                     "changes": []})
         scope = strings(result.get("scope"))
@@ -238,13 +240,15 @@ class ChangeRunner(Runner):
         self.queued_total += len(queued)
         self.runs["ok"] += 1
         self.last_success = now
+        return True
 
     def tick(self, now):
-        if now >= self.retry_at:
+        if now >= self.retry_at and now >= self.last_drain + self.emitter.drain_interval_s:
             try:
                 self.reconcile(now)
-                self.route_pending(now)
-                self.evaluate_pending(now)
+                # Only a tick that actually ran the adapter starts the drain bound.
+                if self.route_pending(now) | self.evaluate_pending(now):
+                    self.last_drain = now
             except Exception as exc:  # noqa: BLE001
                 self.runs["unknown"] += 1
                 self.retry_at = now + 60
@@ -267,7 +271,9 @@ class ChangeRunner(Runner):
                                     (label,)).fetchone()
         if pending:
             source_due = now
-        source_due = max(source_due, self.retry_at)
+        # aegis-ssvr: a backlog or past-due deadline must not mean back-to-back
+        # adapter runs; bound the drain cadence so quipu load stays bounded.
+        source_due = max(source_due, self.retry_at, self.last_drain + self.emitter.drain_interval_s)
         obligations = [source_due]
         for due in (self.delivery_due(now), self.setup_due(now)):
             if due is not None:

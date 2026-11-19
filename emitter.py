@@ -175,6 +175,9 @@ class Emitter:
     change_driven: bool = False
     externally_triggered: bool = False
     renew_interval_s: int = 0
+    # aegis-ssvr: minimum seconds between two incremental drain ticks while a
+    # change backlog or past-due deadlines exist. 0 restores back-to-back ticks.
+    drain_interval_s: int = 300
     persist_runs: bool = False
     resolve_recovery: bool = False
 
@@ -514,6 +517,25 @@ def sink_setup_allowed(conn, sink, now, emitter, resolve_recovery):
     return allowed
 
 
+# aegis-ssvr: a refused one-time sink setup write (e.g. HTTP 400) was retried on
+# every pass, ~every 12 s per emitter, for as long as the process ran. Back off
+# exponentially per emitter (30 s doubling, capped at one hour); success resets.
+SETUP_BACKOFF_BASE_S = 30
+SETUP_BACKOFF_MAX_S = 3600
+_SETUP_FAILURES: dict[str, tuple[int, float]] = {}
+
+
+def setup_retry_at(emitter: str) -> float:
+    return _SETUP_FAILURES.get(emitter, (0, 0.0))[1]
+
+
+def _setup_failed(emitter: str, now: float) -> int:
+    count = _SETUP_FAILURES.get(emitter, (0, 0.0))[0] + 1
+    delay = min(SETUP_BACKOFF_MAX_S, SETUP_BACKOFF_BASE_S * 2 ** (count - 1))
+    _SETUP_FAILURES[emitter] = (count, now + delay)
+    return delay
+
+
 def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: str,
                     budget: WriteBudget | None = None, limit: int = 50,
                     resolve_recovery: bool = False) -> tuple[int, int]:
@@ -532,13 +554,17 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     # Recoveries only read/close an existing firing; no setup write is needed.
     # A redirected bound firing must not set up the changed receiver either.
     if setup is not None and setup() and setup_allowed:
+        if now < setup_retry_at(emitter):
+            return 0, 0  # backing off a refused setup write (aegis-ssvr)
         if budget is not None and not budget.try_take(now):
             return 0, 0
         try:
             sink.setup()
-        except Exception as exc:  # noqa: BLE001 — retried next pass, no row is charged
-            LOG.warning("sink setup for %s failed: %s", emitter, exc)
+        except Exception as exc:  # noqa: BLE001 — retried after backoff, no row is charged
+            delay = _setup_failed(emitter, now)
+            LOG.warning("sink setup for %s failed: %s (retry in %ds)", emitter, exc, delay)
             return 0, 1
+        _SETUP_FAILURES.pop(emitter, None)
     tables = ("outbox", "recovery_outbox") if resolve_recovery else ("outbox",)
     query = " UNION ALL ".join(
         f"SELECT event_id,payload,attempts,created,'{table}' AS source_table FROM {table}"
@@ -742,7 +768,7 @@ class Runner:
                 self.emitter.resolve_recovery)):
             return None
         interval = max(5, self.budget.interval_s if self.budget else 5)
-        return max(now + interval,
+        return max(now + interval, setup_retry_at(self.emitter.label),
                    self.budget._last + self.budget.interval_s if self.budget else now)
 
     def tick(self, now: float) -> None:
