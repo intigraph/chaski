@@ -114,9 +114,31 @@ def strings(value):
     return set(value)
 
 
+class AdapterBudget:
+    """aegis-ssvr: ONE drain budget shared by every change-driven emitter in the
+    process. Each emitter's own drain_interval_s bounds that emitter only; with
+    several change emitters the per-emitter bounds add up. This budget admits at
+    most one adapter drain tick per `interval_s` across all of them, and a failed
+    tick spends it like a successful one so an adapter error storm stays bounded."""
+
+    def __init__(self, interval_s: float):
+        self.interval_s = interval_s
+        self._last = float("-inf")
+
+    def due(self) -> float:
+        return self._last + self.interval_s
+
+    def ready(self, now: float) -> bool:
+        return now >= self.due()
+
+    def spend(self, now: float) -> None:
+        self._last = now
+
+
 class ChangeRunner(Runner):
-    def __init__(self, emitter, conn, sink, budget=None):
+    def __init__(self, emitter, conn, sink, budget=None, adapter_budget=None):
         self.emitter = emitter
+        self.adapter_budget = adapter_budget
         conn.executescript(SCHEMA)
         prepare_inbox_projection(conn)
         self.subscription = call(emitter)
@@ -124,6 +146,7 @@ class ChangeRunner(Runner):
         self.graphs = strings(self.subscription.get("graphs"))
         self.types = strings(self.subscription.get("types", []))
         self.retry_at = 0.0
+        self.last_drain = float("-inf")
         self._reconcile_on_new_subscription(conn, emitter.label)
         super().__init__(emitter, conn, sink, budget)
 
@@ -193,7 +216,7 @@ class ChangeRunner(Runner):
             " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
         if not pending:
-            return
+            return False
         items = strings(call(self.emitter, {"now": now, "route": [json.loads(r[2]) for r in pending]}).get("items"))
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -206,6 +229,7 @@ class ChangeRunner(Runner):
         except BaseException:
             self.conn.execute("ROLLBACK")
             raise
+        return True
 
     def evaluate_pending(self, now):
         label = self.emitter.label
@@ -213,7 +237,7 @@ class ChangeRunner(Runner):
             "SELECT item FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, BATCH))]
         if not items:
-            return
+            return False
         result = call(self.emitter, {"now": now, "items": items,
                                     "changes": []})
         scope = strings(result.get("scope"))
@@ -238,16 +262,27 @@ class ChangeRunner(Runner):
         self.queued_total += len(queued)
         self.runs["ok"] += 1
         self.last_success = now
+        return True
+
+    def _drained(self, now):
+        self.last_drain = now
+        if self.adapter_budget is not None:
+            self.adapter_budget.spend(now)
 
     def tick(self, now):
-        if now >= self.retry_at:
+        if (now >= self.retry_at and now >= self.last_drain + self.emitter.drain_interval_s
+                and (self.adapter_budget is None or self.adapter_budget.ready(now))):
             try:
                 self.reconcile(now)
-                self.route_pending(now)
-                self.evaluate_pending(now)
+                # Only a tick that actually ran the adapter starts the drain bound.
+                if self.route_pending(now) | self.evaluate_pending(now):
+                    self._drained(now)
             except Exception as exc:  # noqa: BLE001
                 self.runs["unknown"] += 1
                 self.retry_at = now + 60
+                # A failed tick starts the bound too: an adapter/quipu error storm
+                # (e.g. 408s) must not drain faster than a healthy backlog.
+                self._drained(now)
                 LOG.warning("incremental emitter %s UNKNOWN (work retained): %s", self.emitter.label, exc)
         self.queued_total += len(queue_recoveries(self.conn, self.emitter))
         deliver_pending(self.conn, self.sink, now, self.emitter.label, self.budget, limit=DELIVER_PER_TICK,
@@ -267,7 +302,10 @@ class ChangeRunner(Runner):
                                     (label,)).fetchone()
         if pending:
             source_due = now
-        source_due = max(source_due, self.retry_at)
+        # aegis-ssvr: a backlog or past-due deadline must not mean back-to-back
+        # adapter runs; bound the drain cadence so quipu load stays bounded.
+        source_due = max(source_due, self.retry_at, self.last_drain + self.emitter.drain_interval_s,
+                         self.adapter_budget.due() if self.adapter_budget is not None else source_due)
         obligations = [source_due]
         for due in (self.delivery_due(now), self.setup_due(now)):
             if due is not None:

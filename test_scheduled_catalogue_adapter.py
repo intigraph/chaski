@@ -207,6 +207,8 @@ def test_actual_incremental_idle_deadline_and_missing_identity_retention(setup, 
         assert count(counter) == 4
         report.write_text(json.dumps(catalogue(p)))
         runner.tick(3060)
+        assert count(counter) == 4  # aegis-ssvr: a failed tick starts the 300 s drain bound
+        runner.tick(3300)
         assert count(counter) == 5 and conn.execute("select count(*) from outbox").fetchone() == (3,)
         assert conn.execute("select due from adapter_deadlines").fetchone() == (3600,)
     finally:

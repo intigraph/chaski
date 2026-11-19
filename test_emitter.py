@@ -289,6 +289,24 @@ class Wiring(unittest.TestCase):
         self.assertEqual(h.sink.ids(), {"id-a1"})
         self.assertIn("chaski_emitter_outbox_delivered_total", reactor.metrics())
 
+    def test_drain_interval_defaults_and_is_validated(self):
+        """aegis-ssvr: bounded drain is the default; bad values are refused."""
+        import chaski
+
+        h = Harness()
+        cfg = h.dir / "emitters.yaml"
+        base = {"label": "u", "owner": "wu", "schedule": "PT1M",
+                "command": h.emitter.command, "sink": {"jsonl": str(h.sink.path)}}
+        cfg.write_text(json.dumps({"emitters": [base]}))
+        (e, _), = chaski.load_emitters(cfg)
+        self.assertEqual(e.drain_interval_s, 300)
+        cfg.write_text(json.dumps({"emitters": [base | {"drain_interval_s": 0}]}))
+        self.assertEqual(chaski.load_emitters(cfg)[0][0].drain_interval_s, 0)
+        for bad in (-1, 86401, "300", 1.5, True):
+            cfg.write_text(json.dumps({"emitters": [base | {"drain_interval_s": bad}]}))
+            with self.assertRaises(chaski.RuleError, msg=repr(bad)):
+                chaski.load_emitters(cfg)
+
     def test_an_emitter_without_a_sink_is_refused(self):
         import chaski
 
