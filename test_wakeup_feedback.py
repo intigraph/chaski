@@ -96,7 +96,6 @@ def test_setup_backoff_doubles_caps_and_resets_on_success():
         def setup(self):
             Sink.attempts += 1
     conn = em.connect(":memory:")
-    e = em.Emitter("y", [], 3600, "fixture")
     em._setup_failed("y", 100.0)                     # retry_at = 130
     assert em.deliver_pending(conn, Sink(), 120.0, "y") == (0, 0)
     assert Sink.attempts == 0                        # still backing off

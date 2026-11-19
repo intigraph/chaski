@@ -618,3 +618,57 @@ def test_idle_tick_does_not_start_the_drain_bound(setup):
     calls.clear()
     runner.tick(401)
     assert calls and calls[-1]["items"] == ["a"]
+
+
+def test_failed_tick_starts_the_drain_bound(setup, monkeypatch):
+    """aegis-ssvr review: an adapter error (e.g. a quipu 408 storm) must not
+    retry every 60 s; a failed tick spends the drain bound like a good one."""
+    conn, e, runner, calls = setup
+    runner.emitter = Emitter("e", ["unused"], 86400, "owner", change_driven=True, drain_interval_s=300)
+    runner.tick(100)
+    conn.execute("INSERT INTO change_inbox VALUES ('e',2,0,?)", (json.dumps(change()),))
+    attempts = []
+
+    def failing(emitter, request=None):
+        attempts.append(request)
+        raise RuntimeError("adapter exited 1: quipu 408")
+    monkeypatch.setattr(inc, "call", failing)
+    for now in range(400, 700, 10):                   # ticks every 10 s for 5 min
+        runner.tick(now)
+    assert len(attempts) == 1                         # 400 only; next allowed at 700
+    assert runner.next_wakeup(690) >= 700
+
+
+def test_adapter_budget_is_shared_across_change_emitters(tmp_path, monkeypatch):
+    """aegis-ssvr review: four change emitters each with their own bound add up;
+    the shared AdapterBudget admits one drain tick per interval fleet-wide."""
+    conn = connect(tmp_path / "emitter.sqlite")
+    calls = []
+
+    def adapter(emitter, request=None):
+        if request is None:
+            return {"version": 1, "attributes": ["status"], "graphs": ["ROOT"]}
+        calls.append((emitter.label, request))
+        if request.get("discover"):
+            return {"items": []}
+        if "route" in request:
+            return {"items": []}
+        return {"scope": [], "records": [], "next_checks": {}}
+    monkeypatch.setattr(inc, "call", adapter)
+    shared = inc.AdapterBudget(600)
+    runners = [inc.ChangeRunner(Emitter(label, ["unused"], 86400, "owner", change_driven=True,
+                                        drain_interval_s=0), conn, Sink(), adapter_budget=shared)
+               for label in ("a", "b", "c", "d")]
+    for r in runners:
+        r.tick(0)                                     # daily discover; no drain work yet
+    for label in "abcd":
+        for tx in range(2, 6):
+            conn.execute("INSERT INTO change_inbox VALUES (?,?,0,?)", (label, tx, json.dumps(change())))
+    calls.clear()
+    for now in range(10, 1200, 10):
+        for r in runners:
+            r.tick(now)
+    drains = [c for c in calls if "route" in c[1]]
+    assert len(drains) == 2                           # t=10 and t=610, across ALL four emitters
+    assert all(r.next_wakeup(1190) >= 1210 for r in runners)
+    conn.close()

@@ -545,8 +545,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true", help="evaluate every rule once, print metrics, exit")
     ap.add_argument("--emitters", type=Path, help="stage 2 emitters YAML (optional)")
     ap.add_argument("--emitter-db", type=Path, help="emitter state (default: beside --state)")
-    ap.add_argument("--emitter-write-interval", type=float, default=5.0,
+    ap.add_argument("--emitter-write-interval", type=float, default=10.0,
                     help="GLOBAL minimum seconds between sink writes, across all emitters")
+    ap.add_argument("--adapter-drain-interval", type=float, default=600.0,
+                    help="GLOBAL minimum seconds between incremental adapter drain ticks,"
+                         " across all change-driven emitters (aegis-ssvr)")
     ap.add_argument("--changes-stream", action=argparse.BooleanOptionalAction, default=True,
                     help="use committed transaction stream (default); requires existing durable cursor")
     source_mode = ap.add_mutually_exclusive_group()
@@ -670,13 +673,14 @@ def run_consumer(args) -> int:
 
             conn = emitter.connect(args.emitter_db or args.state.with_name("emitter.db"))
             budget = emitter.WriteBudget(args.emitter_write_interval)  # ONE, shared by all
-            from incremental import ChangeFeed, ChangeRunner
+            from incremental import AdapterBudget, ChangeFeed, ChangeRunner
 
+            drain = AdapterBudget(args.adapter_drain_interval)  # ONE, shared by change emitters
             for e, definition in load_emitters(args.emitters):
                 sink = make_sink(e, definition, args.quipu)
                 sinks.append(sink)  # retain custody even if runner construction fails
-                reactor.runners.append((ChangeRunner if e.change_driven else emitter.Runner)(
-                    e, conn, sink, budget))
+                reactor.runners.append(ChangeRunner(e, conn, sink, budget, drain) if e.change_driven
+                                       else emitter.Runner(e, conn, sink, budget))
             changing = [r for r in reactor.runners if r.emitter.change_driven]
             if changing:
                 reactor.change_feed = ChangeFeed(reactor.quipu, changing)

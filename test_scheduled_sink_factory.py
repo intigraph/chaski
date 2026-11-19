@@ -339,6 +339,7 @@ def test_partial_startup_failure_closes_constructed_sinks_and_database(tmp_path,
             emitters=tmp_path / "emitters.yml",
             emitter_db=tmp_path / "emitter.sqlite",
             emitter_write_interval=0,
+            adapter_drain_interval=0,
         ),
     )()
     with pytest.raises(RuntimeError, match="adapter startup"):
