@@ -168,6 +168,8 @@ class Reactor:
         self.change_feed = None
         self.change_stream = None
         self.runners: list = []  # stage 2 emitters, attached by main()
+        self.request_budget = None  # aegis-ssvr C1: one process-wide quipu request budget
+        self.reconciler = None
         from deadline_heap import DeadlineHeap
         self.deadlines = DeadlineHeap()
         self._rules = {r.label: r for r in rules}
@@ -189,6 +191,8 @@ class Reactor:
             self.deadlines.set(('runner', label), now)
         if self._event_rules or (self.change_feed is not None and self.change_stream is None):
             self.deadlines.set(('poll', ''), self.last_event_poll + self.event_poll_s)
+        if self.reconciler is not None:
+            self.deadlines.set(('reconcile', ''), now)
         self._timers_ready = True
 
     def update_rule(self, rule):
@@ -222,9 +226,18 @@ class Reactor:
         tmp.write_text(json.dumps({"cursor": self.cursor}))
         tmp.replace(self.state_path)
 
+    def _admit_read(self, now: float) -> bool:
+        """Stage-1 graph reads also spend the global budget when it exists."""
+        if self.request_budget is None:
+            return True
+        from reconcile import FEED
+        return self.request_budget.try_reserve(FEED, 1, now)
+
     def evaluate(self, rule: Rule, now: float) -> None:
         st = self.states[rule.label]
         st.last_attempt = now
+        if not self._admit_read(now):
+            return  # not admitted this pass; the rule's next deadline retries
         try:
             focus = self.quipu.select_focus(rule.condition)
         except Exception as exc:  # noqa: BLE001 — every failure is UNKNOWN by design
@@ -245,7 +258,7 @@ class Reactor:
         """Labels of event rules whose types appeared since the cursor."""
         self.last_event_poll = now
         wanted = {t for r in self._event_rules for t in r.eventTypes.split(",") if t}
-        if not wanted:
+        if not wanted or not self._admit_read(now):
             return set()
         try:
             if self.cursor < 0:
@@ -270,6 +283,7 @@ class Reactor:
         self._initialize_timers(now)
         self.wakes += 1
         poll_changes, event_due, runners_due = False, set(), set()
+        reconcile_due = False
         with self.lock:
             # Freeze this batch before rescheduling; an invalid zero interval
             # cannot make pop_due consume its own new entry forever.
@@ -281,6 +295,8 @@ class Reactor:
                     self.deadlines.set((kind, label), now + max(1, rule.interval_s))
                 elif kind == 'runner':
                     runners_due.add(label)
+                elif kind == 'reconcile':
+                    reconcile_due = True
                 else:
                     event_due |= self.poll_events(now)
                     poll_changes = self.change_feed is not None and self.change_stream is None
@@ -288,9 +304,33 @@ class Reactor:
             for label in event_due:
                 self.evaluate(self._rules[label], now)
                 self.due_evaluations += 1
-        if poll_changes:
-            self.change_feed.poll()
-        if self.change_stream is not None:
+        paused = False
+        if self.reconciler is not None:
+            if reconcile_due:
+                if self.reconciler.step(now) == 'jumped':
+                    self._resume_after_jump()
+                    runners_due.update(self._runner_by_label)
+                self.deadlines.set(('reconcile', ''), self.reconciler.next_wakeup(now))
+            paused = self.reconciler.paused
+            if paused and self.change_stream is not None:
+                # No open server stream while discovering against a pinned watermark.
+                self.change_stream.close()
+                self.change_stream = None
+                self._stream_held = True
+            # Snapshot on the owner thread; the scrape thread must not touch SQLite.
+            costs = [r.cost_per_item for r in self.runners if getattr(r, "cost_per_item", None)]
+            per_item = sum(costs) / len(costs) if costs else float(getattr(self.runners[0], "call_requests", 40))
+            self._reconcile_lines = self.reconciler.metrics(_esc, per_item)
+            for runner in self.runners:
+                if runner.emitter.change_driven:
+                    runner.paused = paused
+        # While reconcile mode discovers against a pinned watermark the feed waits:
+        # the cursor jumps to that watermark instead of replaying history.
+        if poll_changes and not paused:
+            self.change_feed.poll(now)
+        if self.change_stream is not None and not paused:
+            if self.request_budget is not None:
+                self.change_stream.grant(self.request_budget, now)
             self.change_stream.pump(self.change_feed)
         if self.change_feed is not None:
             runners_due.update(self.change_feed.take_dirty())
@@ -304,6 +344,16 @@ class Reactor:
             else:
                 # Bootstrap failed; poll transport owns retry, not a fast runner tick.
                 self.deadlines.set(('runner', label), now + self.event_poll_s)
+
+    def _resume_after_jump(self):
+        """Restart the transport at the new durable cursor (the pinned watermark)."""
+        if self.change_stream is not None or getattr(self, "_stream_held", False):
+            from change_stream import ChangeStream
+            if self.change_stream is not None:
+                self.change_stream.close()
+            self.change_stream = ChangeStream(self.quipu, self.change_feed.cursor_tx,
+                                              budgeted=self.request_budget is not None)
+            self._stream_held = False
 
     def metrics(self) -> str:
         with self.lock:
@@ -355,6 +405,9 @@ class Reactor:
                           "by the reactor, including refused and replayed deliveries; not commit acknowledgements.",
                           "# TYPE chaski_changes_stream_events_received_total counter",
                           f"chaski_changes_stream_events_received_total {self.change_stream.received}"]
+            if self.request_budget is not None:
+                lines += self.request_budget.metrics(_esc)
+            lines += getattr(self, "_reconcile_lines", [])
             if self.runners:
                 lines += ["# HELP chaski_emitter_outbox_pending Events queued and not yet received.",
                           "# TYPE chaski_emitter_outbox_pending gauge"]
@@ -550,6 +603,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--adapter-drain-interval", type=float, default=600.0,
                     help="GLOBAL minimum seconds between incremental adapter drain ticks,"
                          " across all change-driven emitters (aegis-ssvr)")
+    ap.add_argument("--request-budget-rate", type=float, default=0.0,
+                    help="ONE process-wide quipu request budget in req/s (aegis-ssvr C1);"
+                         " 0 keeps the per-tick drain budget. Requires budget-capped adapters")
+    ap.add_argument("--request-budget-burst", type=int, default=40,
+                    help="token bucket size in requests; also the largest single reservation")
+    ap.add_argument("--request-budget-max-window-rate", type=float, default=0.3,
+                    help="refuse a rate/burst pair whose worst 15-minute window"
+                         " (rate + burst/900) exceeds this many req/s")
+    ap.add_argument("--adapter-call-requests", type=int, default=40,
+                    help="hard request cap reserved for (and passed to) each adapter call")
+    ap.add_argument("--reconcile", action=argparse.BooleanOptionalAction, default=True,
+                    help="catch up after downtime by reconcile mode instead of replay"
+                         " (only with the request budget, and only if every change emitter is eligible)")
+    ap.add_argument("--reconcile-max-lag-tx", type=int, default=5000)
+    ap.add_argument("--reconcile-max-backlog", type=int, default=5000)
+    ap.add_argument("--reconcile-cooldown", type=int, default=86400,
+                    help="seconds after a completed run before lag/backlog may trigger another")
     ap.add_argument("--changes-stream", action=argparse.BooleanOptionalAction, default=True,
                     help="use committed transaction stream (default); requires existing durable cursor")
     source_mode = ap.add_mutually_exclusive_group()
@@ -676,14 +746,40 @@ def run_consumer(args) -> int:
             from incremental import AdapterBudget, ChangeFeed, ChangeRunner
 
             drain = AdapterBudget(args.adapter_drain_interval)  # ONE, shared by change emitters
+            rate = getattr(args, "request_budget_rate", 0.0) or 0.0
+            if rate < 0:
+                raise RuleError("--request-budget-rate must be >= 0 (0 disables the global budget)")
+            requests = None
+            if rate > 0:
+                import reconcile
+                requests = reconcile.RequestBudget(conn, rate, args.request_budget_burst,
+                                                   max_window_rate=args.request_budget_max_window_rate)
+                reactor.request_budget = requests
+                budget = reconcile.BudgetedWrite(budget, requests)
             for e, definition in load_emitters(args.emitters):
+                if requests is not None and not e.change_driven:
+                    raise RuleError(f"emitter {e.label}: the global request budget admits only"
+                                    " change-driven emitters with budget-capped adapters")
                 sink = make_sink(e, definition, args.quipu)
                 sinks.append(sink)  # retain custody even if runner construction fails
-                reactor.runners.append(ChangeRunner(e, conn, sink, budget, drain) if e.change_driven
-                                       else emitter.Runner(e, conn, sink, budget))
+                reactor.runners.append(
+                    ChangeRunner(e, conn, sink, budget, drain, request_budget=requests,
+                                 call_requests=args.adapter_call_requests) if e.change_driven and requests
+                    else ChangeRunner(e, conn, sink, budget, drain) if e.change_driven
+                    else emitter.Runner(e, conn, sink, budget))
             changing = [r for r in reactor.runners if r.emitter.change_driven]
             if changing:
                 reactor.change_feed = ChangeFeed(reactor.quipu, changing)
+                reactor.change_feed.request_budget = requests
+                if requests is not None and args.reconcile:
+                    import reconcile
+                    reactor.reconciler = reconcile.Reconciler(
+                        conn, reactor.change_feed, changing, requests,
+                        max_lag_tx=args.reconcile_max_lag_tx, max_backlog=args.reconcile_max_backlog,
+                        cooldown_s=args.reconcile_cooldown, page_requests=args.adapter_call_requests)
+                    if not reactor.reconciler.is_eligible:
+                        LOG.warning("reconcile mode DISABLED: emitters without the contract: %s",
+                                    ", ".join(reactor.reconciler.blocking))
         return _serve_consumer(args, reactor, rules)
     finally:
         # Drain before releasing ConsumerLease; pending outbox rows remain
@@ -728,7 +824,10 @@ def _serve_consumer(args, reactor, rules):
         # and move that point before the stream had delivered anything.
         reactor.change_feed.cursor_tx = row[0]
         reactor.change_feed.ready = True
-        reactor.change_stream = ChangeStream(reactor.quipu, row[0])
+        if getattr(reactor, "request_budget", None) is not None:
+            reactor.change_stream = ChangeStream(reactor.quipu, row[0], budgeted=True)
+        else:
+            reactor.change_stream = ChangeStream(reactor.quipu, row[0])
     serve_metrics(reactor, args.metrics_port)
     shutdown = threading.Event()
     while True:

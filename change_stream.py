@@ -31,8 +31,15 @@ def frames(response):
 
 class ChangeStream:
     """One network reader, one queued frame; SQLite stays on the reactor thread."""
-    def __init__(self, quipu, cursor):
+    def __init__(self, quipu, cursor, budgeted=False):
         self.quipu, self.cursor = quipu, cursor
+        # aegis-ssvr C1: under the global request budget each (re)connect is one
+        # request, reserved by the reactor thread (SQLite stays on that thread):
+        # the reader asks with want_connect and waits for permit.
+        self.budgeted = budgeted
+        self.want_connect = threading.Event()
+        self.permit = threading.Event()
+        self.connects = 0
         self.pending = queue.Queue(maxsize=1)
         self.errors = 0
         self.received = 0
@@ -45,6 +52,14 @@ class ChangeStream:
     def _read(self):
         backoff = 1
         while not self.stop.is_set():
+            if self.budgeted:
+                self.want_connect.set()
+                self.wakeup.set()
+                while not self.permit.wait(1):
+                    if self.stop.is_set():
+                        return
+                self.permit.clear()
+            self.connects += 1
             try:
                 req = urllib.request.Request(
                     self.quipu.base + '/changes/stream?since=' + str(self.cursor),
@@ -128,6 +143,15 @@ class ChangeStream:
             return True
         return self.wakeup.wait(timeout)
 
+    def grant(self, budget, now):
+        """Reactor thread: reserve one request for a pending (re)connect."""
+        if self.budgeted and self.want_connect.is_set():
+            from reconcile import FEED
+            if budget.try_reserve(FEED, 1, now):
+                self.want_connect.clear()
+                self.permit.set()
+
     def close(self):
         self.stop.set()
+        self.permit.set()
         self.wakeup.set()
