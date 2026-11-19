@@ -12,7 +12,9 @@ drove quipu to 5.7 req/s. Instead:
   class does not take tokens while a higher class is waiting.
 * Reconciler: STREAM -> RECONCILE -> DRAINING -> STREAM. Entry is checked only
   in STREAM and not inside the cooldown. RECONCILE pins the head watermark W,
-  discovers every change emitter's candidates as of W in budgeted pages, queues
+  discovers every change emitter's candidates from current state (at or after W;
+  pinned historical reads exceed the server's query timeout) in budgeted pages,
+  while changes after W are replayed from the stream once the cursor is at W; queues
   them (and every tracked item) as priority-2 deadlines, then in ONE
   transaction purges the superseded inbox, recomputes its projections and jumps
   the cursor to W. DRAINING evaluates those deadlines below live work.
@@ -26,13 +28,16 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 
 LOG = logging.getLogger("chaski.reconcile")
 
 # Scheduling classes, highest priority first.
 FEED, SINK, LIVE, DISCOVER, RECONCILE = 1, 2, 3, 4, 5
 CLASS_NAMES = {FEED: "feed", SINK: "sink", LIVE: "live", DISCOVER: "discover", RECONCILE: "reconcile"}
-DEMAND_TTL_S = 120.0       # a waiting class blocks lower classes for at most this long per wait
+DEMAND_TTL_S = 120.0       # floor: a waiting class blocks lower classes until it stops re-asking
+BLOCKED_RECHECK_S = 5.0    # a caller blocked only by priority re-checks this often (no busy-spin)
+WINDOW_S = 900.0           # the bound is stated over any 15-minute window
 STARVATION_S = 600.0       # the reconcile class gets at least one grant per this interval
 JUMP_RETRY_S = 300.0       # a rolled-back cursor jump waits this long before retrying
 
@@ -59,19 +64,28 @@ class BudgetError(ValueError):
 class RequestBudget:
     """Persisted, prioritized token bucket counted in quipu requests."""
 
-    def __init__(self, conn, rate: float, burst: int):
-        if not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0):
+    def __init__(self, conn, rate: float, burst: int, max_window_rate: float | None = None):
+        if isinstance(rate, bool) or not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0):
             raise BudgetError("request budget rate must be a positive finite number")
         if type(burst) is not int or burst < 1:
             raise BudgetError("request budget burst must be a positive integer")
+        # The stated bound: requests in ANY 15-minute window <= rate*900 + burst.
+        if max_window_rate is not None and rate + burst / WINDOW_S > max_window_rate + 1e-9:
+            raise BudgetError(f"rate {rate} + burst {burst}/{WINDOW_S:.0f}s exceeds the"
+                              f" {max_window_rate} req/s window bound")
         self.conn, self.rate, self.burst = conn, float(rate), burst
+        self.lock = threading.Lock()   # the stream reader thread also reserves
         conn.executescript(BUDGET_SCHEMA)
         row = conn.execute("SELECT tokens, updated FROM request_budget WHERE id=1").fetchone()
-        if row is None:
-            self.tokens, self.updated = 0.0, None   # a new database starts EMPTY
-        else:
-            self.tokens, self.updated = min(float(row[0]), burst), float(row[1])
-        self.demand: dict[int, float] = {}
+        # A new database starts EMPTY. A restart keeps the persisted tokens and does
+        # NOT credit the downtime: refill counts only from this process's first use.
+        self.tokens = 0.0 if row is None else min(float(row[0]), burst)
+        self.updated = None
+        # A waiting class blocks lower classes while it keeps re-asking; it re-asks
+        # at least every refill time, so the TTL must exceed that (aegis-ssvr C1).
+        self.demand_ttl = max(DEMAND_TTL_S, 1.5 * burst / self.rate)
+        self.demand: dict[int, float] = {}        # last failed attempt per class
+        self.waiting_since: dict[int, float] = {}  # first failed attempt of the current wait
         self.last_grant: dict[int, float] = {}
         self.reserved_total = {c: 0 for c in CLASS_NAMES}
         self.refunded_total = 0
@@ -91,9 +105,9 @@ class RequestBudget:
         self.conn.commit()
 
     def _blocked_by_higher(self, cls: int, now: float) -> bool:
-        if cls == RECONCILE and now - self.demand.get(RECONCILE, now) >= STARVATION_S:
+        if cls == RECONCILE and now - self.waiting_since.get(RECONCILE, now) >= STARVATION_S:
             return False   # starvation guard: reconcile work waiting this long still advances
-        return any(c < cls and now - t < DEMAND_TTL_S for c, t in self.demand.items())
+        return any(c < cls and now - t < self.demand_ttl for c, t in self.demand.items())
 
     def try_reserve(self, cls: int, k: int, now: float) -> bool:
         """Take k tokens for a call that will make at most k requests."""
@@ -101,16 +115,19 @@ class RequestBudget:
             raise BudgetError(f"unknown budget class {cls!r}")
         if type(k) is not int or not 1 <= k <= self.burst:
             raise BudgetError(f"a reservation must be 1..{self.burst} requests, got {k!r}")
-        self._refill(now)
-        if self._blocked_by_higher(cls, now) or self.tokens < k:
-            self.demand.setdefault(cls, now)
-            return False   # nothing spent; the refill is persisted with the next grant
-        self.tokens -= k
-        self.demand.pop(cls, None)
-        self.last_grant[cls] = now
-        self.reserved_total[cls] += k
-        self._persist()
-        return True
+        with self.lock:
+            self._refill(now)
+            if self._blocked_by_higher(cls, now) or self.tokens < k:
+                self.demand[cls] = now                 # refreshed on every attempt
+                self.waiting_since.setdefault(cls, now)
+                return False   # nothing spent; the refill is persisted with the next grant
+            self.tokens -= k
+            self.demand.pop(cls, None)
+            self.waiting_since.pop(cls, None)
+            self.last_grant[cls] = now
+            self.reserved_total[cls] += k
+            self._persist()
+            return True
 
     def settle(self, reserved: int, cost, label: str) -> int:
         """Refund reserved - actual. A missing or over-cap cost is charged in full
@@ -123,15 +140,21 @@ class RequestBudget:
             return reserved
         refund = reserved - actual
         if refund:
-            self.tokens = min(self.burst, self.tokens + refund)
-            self.refunded_total += refund
-            self._persist()
+            with self.lock:
+                self.tokens = min(self.burst, self.tokens + refund)
+                self.refunded_total += refund
+                self._persist()
         return actual
 
-    def due(self, k: int, now: float) -> float:
-        """Earliest time k tokens could be available (ignoring priority)."""
-        self._refill(now)
-        return now if self.tokens >= k else now + (k - self.tokens) / self.rate
+    def due(self, k: int, now: float, cls: int | None = None) -> float:
+        """When to try again: refill time for k tokens, and never sooner than a
+        bounded re-check while only a higher class's demand blocks (no busy-spin)."""
+        with self.lock:
+            self._refill(now)
+            at = now if self.tokens >= k else now + (k - self.tokens) / self.rate
+            if cls is not None and self._blocked_by_higher(cls, now):
+                at = max(at, now + BLOCKED_RECHECK_S)
+            return at
 
     def metrics(self, esc) -> list[str]:
         lines = [f"chaski_budget_tokens {self.tokens:.3f}",
@@ -141,7 +164,7 @@ class RequestBudget:
         lines += [f'chaski_budget_reserved_total{{class="{CLASS_NAMES[c]}"}} {n}'
                   for c, n in sorted(self.reserved_total.items())]
         lines += [f'chaski_budget_violation_total{{emitter="{esc(label)}"}} {n}'
-                  for label, n in sorted(self.violations.items())]
+                  for label, n in sorted(dict(self.violations).items())]
         return lines
 
 
@@ -212,9 +235,9 @@ class Reconciler:
         self.conn, self.feed, self.runners, self.budget = conn, feed, list(runners), budget
         self.max_lag_tx, self.max_backlog = max_lag_tx, max_backlog
         self.cooldown_s, self.cooldown_override_lag_tx = cooldown_s, cooldown_override_lag_tx
-        self.page_requests = page_requests or budget.burst
-        if not 1 <= self.page_requests <= budget.burst:
-            raise BudgetError("discover page reservation must fit the burst")
+        self.page_requests = budget.burst if page_requests is None else page_requests
+        if type(self.page_requests) is not int or not 1 <= self.page_requests <= budget.burst:
+            raise BudgetError("discover page reservation must be an integer within the burst")
         self._head = head
         conn.executescript(RECONCILE_SCHEMA)
         self.is_eligible, self.blocking = eligible(self.runners)
@@ -252,7 +275,9 @@ class Reconciler:
         return row[0] or 0
 
     def remaining(self) -> int:
-        labels = [r.emitter.label for r in self.runners]
+        # A suspended emitter (broken cost contract) keeps its deadlines for after a
+        # restart but must not wedge DRAINING for the healthy ones.
+        labels = [r.emitter.label for r in self.runners if not getattr(r, "suspended", False)]
         if not labels:
             return 0
         marks = ",".join("?" * len(labels))
@@ -261,25 +286,32 @@ class Reconciler:
             labels).fetchone()[0]
 
     # --- entry ------------------------------------------------------------------
-    def reconcile_due(self, now: float) -> bool:
-        """The daily catalogue pass, or a changed subscription (no stored pass)."""
+    def reconcile_due(self, now: float) -> str | None:
+        """'new' for a changed subscription (no stored pass), 'daily' when the
+        catalogue pass is due. The pass is stamped when a run COMPLETES."""
+        due = None
         for runner in self.runners:
             row = self.conn.execute("SELECT last_success FROM adapter_reconcile WHERE emitter=?",
                                     (runner.emitter.label,)).fetchone()
-            if row is None or now - row[0] >= runner.emitter.interval_s:
-                return True
-        return False
+            if row is None:
+                return "new"
+            if now - row[0] >= runner.emitter.interval_s:
+                due = "daily"
+        return due
 
     def should_enter(self, now: float) -> bool:
-        """Only from STREAM. Lag/backlog triggers respect the cooldown; the daily
-        or new-subscription catalogue pass is the existing backstop, due on its own clock."""
+        """Only from STREAM. A changed subscription enters at once; the daily pass
+        and the lag/backlog triggers all respect the cooldown after a completed run,
+        so a drain longer than a day cannot re-trigger itself."""
         if not self.is_eligible or self.state != "stream":
             return False
-        if self.reconcile_due(now):
+        due = self.reconcile_due(now)
+        if due == "new":
             return True
         lag = self.feed.lag
         backlog = self.backlog()
-        if not ((lag is not None and lag > self.max_lag_tx) or backlog > self.max_backlog):
+        triggered = due == "daily" or (lag is not None and lag > self.max_lag_tx) or backlog > self.max_backlog
+        if not triggered:
             return False
         row = self.run()
         if row and row[4] is not None and now - row[4] < self.cooldown_s:
@@ -345,6 +377,8 @@ class Reconciler:
             return True
         label, cursor = pending[0]
         runner = next(r for r in self.runners if r.emitter.label == label)
+        if getattr(runner, "suspended", False):
+            return False   # UNKNOWN until restart: the run cannot complete without it
         if not self.budget.try_reserve(DISCOVER, self.page_requests, now):
             return False
         request = {"discover": True, "now": now, "as_of_tx": target,
@@ -358,8 +392,20 @@ class Reconciler:
             self.unknown += 1
             LOG.warning("reconcile discover %s UNKNOWN (page retried later): %s", label, exc)
             return False
+        before = self.budget.violations.get(label, 0)
         self.budget.settle(self.page_requests, out.get("cost"), label)
-        items = strings(out.get("items"))
+        if self.budget.violations.get(label, 0) > before:
+            # Same contract as ChangeRunner._call: the page is discarded, the emitter suspended.
+            runner.suspended = True
+            self.unknown += 1
+            LOG.warning("reconcile discover %s broke its request-cost contract; suspended", label)
+            return False
+        try:
+            items = strings(out.get("items"))
+        except Exception as exc:  # noqa: BLE001
+            self.unknown += 1
+            LOG.warning("reconcile discover %s refused a malformed page: %s", label, exc)
+            return False
         complete = out.get("complete") is True
         next_cursor = out.get("next_cursor")
         if complete == (next_cursor is not None):
@@ -404,8 +450,6 @@ class Reconciler:
             self.conn.execute(trigger)
             assert_inbox_projection(self.conn)
             self.conn.execute("INSERT OR REPLACE INTO change_cursor VALUES (1,?)", (target,))
-            self.conn.executemany("INSERT OR REPLACE INTO adapter_reconcile VALUES (?,?)",
-                                  [(r.emitter.label, now) for r in self.runners])
             self.conn.execute("UPDATE reconcile_run SET state='draining' WHERE id=1")
             self.conn.execute("COMMIT")
         except BaseException:
@@ -418,6 +462,26 @@ class Reconciler:
                     run_id, target, self.purge_seconds, self.remaining())
 
     # --- driver -------------------------------------------------------------------
+    def _run_matches_config(self) -> bool:
+        run_id = self.run()[0]
+        stored = {r[0] for r in self.conn.execute(
+            "SELECT emitter FROM reconcile_emitter WHERE run_id=?", (run_id,))}
+        return self.is_eligible and stored == {r.emitter.label for r in self.runners}
+
+    def abort(self, reason: str) -> None:
+        """Abandon an unfinished run without moving the cursor. Deadlines already
+        queued stay (idempotent); a new run starts from STREAM if still triggered."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("DELETE FROM reconcile_emitter")
+            self.conn.execute("UPDATE reconcile_run SET state='stream', completed=NULL WHERE id=1")
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        self.unknown += 1
+        LOG.warning("RECONCILE run aborted, cursor unchanged: %s", reason)
+
     def step(self, now: float) -> str | None:
         """Advance the machine. Returns 'jumped' when the cursor moved to W."""
         state = self.state
@@ -426,6 +490,11 @@ class Reconciler:
                 self.enter(now)
             return None
         if state == "reconcile":
+            if not self._run_matches_config():
+                # Emitters added, removed or no longer eligible since the run began:
+                # never jump the shared cursor past an emitter the run did not discover.
+                self.abort("change emitters differ from the persisted run, or one is ineligible")
+                return None
             if now < self.retry_at:
                 return None
             if self.discover_step(now):
@@ -439,15 +508,24 @@ class Reconciler:
                 return "jumped"
             return None
         if state == "draining" and self.remaining() == 0:
-            self.conn.execute("UPDATE reconcile_run SET state='stream', completed=? WHERE id=1", (now,))
-            self.conn.commit()
+            # Stamp the catalogue pass at COMPLETION, so the next daily pass and
+            # the cooldown both count from the end of the drain.
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.executemany("INSERT OR REPLACE INTO adapter_reconcile VALUES (?,?)",
+                                      [(r.emitter.label, now) for r in self.runners])
+                self.conn.execute("UPDATE reconcile_run SET state='stream', completed=? WHERE id=1", (now,))
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
             LOG.warning("RECONCILE complete: back to stream mode, cooldown %ss", self.cooldown_s)
         return None
 
     def next_wakeup(self, now: float) -> float:
         state = self.state
         if state == "reconcile":
-            return max(now + 0.01, self.retry_at, self.budget.due(self.page_requests, now))
+            return max(now + 0.01, self.retry_at, self.budget.due(self.page_requests, now, DISCOVER))
         return now + 60
 
     def eta_seconds(self, cost_per_item: float) -> float:

@@ -312,6 +312,11 @@ class Reactor:
                     runners_due.update(self._runner_by_label)
                 self.deadlines.set(('reconcile', ''), self.reconciler.next_wakeup(now))
             paused = self.reconciler.paused
+            if paused and self.change_stream is not None:
+                # No open server stream while discovering against a pinned watermark.
+                self.change_stream.close()
+                self.change_stream = None
+                self._stream_held = True
             # Snapshot on the owner thread; the scrape thread must not touch SQLite.
             costs = [r.cost_per_item for r in self.runners if getattr(r, "cost_per_item", None)]
             per_item = sum(costs) / len(costs) if costs else float(getattr(self.runners[0], "call_requests", 40))
@@ -322,8 +327,10 @@ class Reactor:
         # While reconcile mode discovers against a pinned watermark the feed waits:
         # the cursor jumps to that watermark instead of replaying history.
         if poll_changes and not paused:
-            self.change_feed.poll()
+            self.change_feed.poll(now)
         if self.change_stream is not None and not paused:
+            if self.request_budget is not None:
+                self.change_stream.grant(self.request_budget, now)
             self.change_stream.pump(self.change_feed)
         if self.change_feed is not None:
             runners_due.update(self.change_feed.take_dirty())
@@ -340,10 +347,13 @@ class Reactor:
 
     def _resume_after_jump(self):
         """Restart the transport at the new durable cursor (the pinned watermark)."""
-        if self.change_stream is not None:
+        if self.change_stream is not None or getattr(self, "_stream_held", False):
             from change_stream import ChangeStream
-            self.change_stream.close()
-            self.change_stream = ChangeStream(self.quipu, self.change_feed.cursor_tx)
+            if self.change_stream is not None:
+                self.change_stream.close()
+            self.change_stream = ChangeStream(self.quipu, self.change_feed.cursor_tx,
+                                              budgeted=self.request_budget is not None)
+            self._stream_held = False
 
     def metrics(self) -> str:
         with self.lock:
@@ -598,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
                          " 0 keeps the per-tick drain budget. Requires budget-capped adapters")
     ap.add_argument("--request-budget-burst", type=int, default=40,
                     help="token bucket size in requests; also the largest single reservation")
+    ap.add_argument("--request-budget-max-window-rate", type=float, default=0.3,
+                    help="refuse a rate/burst pair whose worst 15-minute window"
+                         " (rate + burst/900) exceeds this many req/s")
     ap.add_argument("--adapter-call-requests", type=int, default=40,
                     help="hard request cap reserved for (and passed to) each adapter call")
     ap.add_argument("--reconcile", action=argparse.BooleanOptionalAction, default=True,
@@ -734,10 +747,13 @@ def run_consumer(args) -> int:
 
             drain = AdapterBudget(args.adapter_drain_interval)  # ONE, shared by change emitters
             rate = getattr(args, "request_budget_rate", 0.0) or 0.0
+            if rate < 0:
+                raise RuleError("--request-budget-rate must be >= 0 (0 disables the global budget)")
             requests = None
             if rate > 0:
                 import reconcile
-                requests = reconcile.RequestBudget(conn, rate, args.request_budget_burst)
+                requests = reconcile.RequestBudget(conn, rate, args.request_budget_burst,
+                                                   max_window_rate=args.request_budget_max_window_rate)
                 reactor.request_budget = requests
                 budget = reconcile.BudgetedWrite(budget, requests)
             for e, definition in load_emitters(args.emitters):
@@ -808,7 +824,10 @@ def _serve_consumer(args, reactor, rules):
         # and move that point before the stream had delivered anything.
         reactor.change_feed.cursor_tx = row[0]
         reactor.change_feed.ready = True
-        reactor.change_stream = ChangeStream(reactor.quipu, row[0])
+        if getattr(reactor, "request_budget", None) is not None:
+            reactor.change_stream = ChangeStream(reactor.quipu, row[0], budgeted=True)
+        else:
+            reactor.change_stream = ChangeStream(reactor.quipu, row[0])
     serve_metrics(reactor, args.metrics_port)
     shutdown = threading.Event()
     while True:

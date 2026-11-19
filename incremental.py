@@ -260,13 +260,15 @@ class ChangeRunner(Runner):
         label = self.emitter.label
         # Unary + removes the frontier TEXT affinity, matching json_extract's
         # expression-index affinity; otherwise SQLite can scan every emitter row.
+        if self.paused:
+            return False
         pending = self.conn.execute(
             "SELECT tx,seq,payload FROM change_inbox INDEXED BY change_inbox_entity "
             "WHERE emitter=? AND json_extract(payload,'$.entity') IN "
             "(SELECT +entity FROM change_inbox_frontier WHERE emitter=? "
             " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
             (label, label, BATCH)).fetchall()
-        if not pending or self.paused:
+        if not pending:
             return False
         from reconcile import LIVE
         try:
@@ -289,16 +291,20 @@ class ChangeRunner(Runner):
 
     def evaluate_pending(self, now):
         label = self.emitter.label
+        if self.paused:
+            return False
         limit = self.batch if self.request_budget is not None else BATCH
         selected = self.conn.execute(
             "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, limit)).fetchall()
+        if self.request_budget is not None and selected and selected[0][1] < 2:
+            selected = [r for r in selected if r[1] < 2]   # never charge reconcile work as live
         items = [r[0] for r in selected]
-        if not items or self.paused:
+        if not items:
             return False
         from reconcile import LIVE, RECONCILE
         # Reconcile-queued work (priority 2) runs below live changes and natural deadlines.
-        cls = RECONCILE if all(r[1] == 2 for r in selected) else LIVE
+        cls = RECONCILE if selected[0][1] == 2 else LIVE
         try:
             result = self._call(cls, {"now": now, "items": items, "changes": []}, now)
         except NotAdmitted:
@@ -389,7 +395,8 @@ class ChangeRunner(Runner):
         # aegis-ssvr: a backlog or past-due deadline must not mean back-to-back
         # adapter runs; bound the drain cadence so quipu load stays bounded.
         if self.request_budget is not None:
-            source_due = max(source_due, self.retry_at, self.request_budget.due(self.call_requests, now))
+            from reconcile import LIVE
+            source_due = max(source_due, self.retry_at, self.request_budget.due(self.call_requests, now, LIVE))
             if self.suspended or self.paused:
                 source_due = max(source_due, now + 60)
         else:
@@ -478,18 +485,18 @@ class ChangeFeed:
         dirty, self.dirty = self.dirty, set()
         return dirty
 
-    def poll(self):
+    def poll(self, now=None):
         # Bounded catch-up in one poll: a normal burst need not wait another
         # minute per page. Each page commits independently before the next read.
         for _ in range(10):
-            if not self._page():
+            if not self._page(now):
                 break
 
-    def _page(self):
+    def _page(self, now=None):
         if self.request_budget is not None:
             import time
             from reconcile import FEED
-            if not self.request_budget.try_reserve(FEED, 1, time.time()):
+            if not self.request_budget.try_reserve(FEED, 1, time.time() if now is None else now):
                 return False
         try:
             row = self.conn.execute("SELECT tx FROM change_cursor WHERE id=1").fetchone()

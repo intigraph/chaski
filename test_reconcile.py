@@ -336,3 +336,153 @@ def test_quiet_stream_with_a_fresh_daily_pass_does_not_enter(tmp_path, monkeypat
     conn.executemany("INSERT OR REPLACE INTO adapter_reconcile VALUES (?,?)", [("a", 100), ("b", 100)])
     feed.lag = 10
     assert not recon.should_enter(200.0)
+
+
+# --- review round 2 (Gemini on #77) --------------------------------------------------
+
+def test_discover_cost_violation_discards_the_page_and_suspends(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch)
+    fill_inbox(conn, ("a", "b"), rows=6000)
+    original = adapters.__call__
+
+    def overspend(emitter, request=None):
+        out = original(emitter, request)
+        if request and request.get("discover"):
+            out["cost"] = {"quipu_requests": 11}            # cap was 10
+        return out
+    monkeypatch.setattr(inc, "call", overspend)
+    for now in range(0, 400):
+        recon.step(float(now))
+    assert runners[0].suspended and budget.violations["a"] == 1
+    assert recon.state == "reconcile"                       # cannot complete, never jumps
+    assert not conn.execute("SELECT 1 FROM reconcile_emitter WHERE complete=1 OR cursor IS NOT NULL").fetchone()
+    assert conn.execute("SELECT tx FROM change_cursor").fetchone() == (100,)
+    calls = len(adapters.calls)
+    for now in range(400, 800):
+        recon.step(float(now))
+    assert len([c for c in adapters.calls[calls:] if c[0] == "a"]) == 0   # suspended: no more pages
+
+
+def test_restart_after_downtime_does_not_refill(tmp_path):
+    conn = connect(tmp_path / "e.db")
+    b = rc.RequestBudget(conn, 1.0, 40)
+    b.try_reserve(rc.LIVE, 1, 0.0)
+    assert b.try_reserve(rc.LIVE, 5, 10.0)                  # 10 refilled, 5 left
+    later = rc.RequestBudget(conn, 1.0, 40)                 # a day of downtime
+    assert later.tokens == pytest.approx(5.0)
+    assert not later.try_reserve(rc.LIVE, 10, 86_400.0)     # downtime is not credited
+    assert later.try_reserve(rc.LIVE, 10, 86_405.0)
+
+
+def test_rate_and_burst_must_fit_the_window_bound(tmp_path):
+    conn = connect(tmp_path / "e.db")
+    rc.RequestBudget(conn, 0.25, 40, max_window_rate=0.3)   # 0.294 req/s worst window
+    with pytest.raises(rc.BudgetError, match="window"):
+        rc.RequestBudget(conn, 0.3, 40, max_window_rate=0.3)
+
+
+def test_waiting_live_keeps_priority_through_a_long_refill_and_nothing_spins(tmp_path):
+    b = rc.RequestBudget(connect(tmp_path / "e.db"), 0.25, 40)
+    assert b.demand_ttl >= 1.5 * 40 / 0.25
+    b.tokens, b.updated = 0.0, 0.0
+    t = 0.0
+    while not b.try_reserve(rc.LIVE, 40, t):                # LIVE re-asks at its due time
+        assert not b.try_reserve(rc.RECONCILE, 10, t)       # reconcile never jumps ahead
+        nxt = b.due(40, t, rc.LIVE)
+        assert nxt > t                                      # no busy-spin
+        t = nxt
+    assert t >= 160
+    b.demand[rc.SINK] = t                                   # a higher class just failed
+    b.tokens = 40.0
+    assert b.due(10, t, rc.LIVE) >= t + rc.BLOCKED_RECHECK_S   # blocked by priority: bounded re-check
+
+
+def test_a_drain_longer_than_a_day_does_not_retrigger(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch)
+    fill_inbox(conn, ("a", "b"), rows=6000)
+    end = run_until(recon, 0.0, "draining")
+    assert conn.execute("SELECT COUNT(*) FROM adapter_reconcile").fetchone() == (0,)   # not stamped yet
+    conn.execute("DELETE FROM adapter_deadlines WHERE priority=2")
+    done = end + 2 * 86400                                   # drained two days later
+    recon.step(done)
+    assert recon.state == "stream"
+    assert set(conn.execute("SELECT emitter,last_success FROM adapter_reconcile")) == {("a", done), ("b", done)}
+    assert not recon.should_enter(done + 1)                  # no immediate re-entry
+    assert recon.should_enter(done + 86400)                  # next daily pass, after the cooldown
+
+
+def test_emitter_set_change_aborts_a_persisted_run(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch)
+    fill_inbox(conn, ("a", "b"), rows=6000)
+    now = 0.0
+    while recon.state != "reconcile":
+        recon.step(now)
+        now += 1
+    for subset in ([runners[0]], runners + [runners[0].__class__.__new__(runners[0].__class__)]):
+        if len(subset) > 2:
+            extra = subset[-1]
+            extra.emitter = Emitter("c", ["unused"], 86400, "owner", change_driven=True)
+            extra.subscription = {"budget_cap": 1, "reconcile_contract": 1}
+        again = rc.Reconciler(conn, feed, subset, budget, page_requests=10, head=lambda: 10_000)
+        assert again.state == "reconcile"                     # the persisted run
+        again.step(now)                                       # no StopIteration, no jump
+        assert again.state == "stream"
+        assert conn.execute("SELECT tx FROM change_cursor").fetchone() == (100,)
+        assert conn.execute("SELECT COUNT(*) FROM change_inbox").fetchone() == (12000,)
+        conn.execute("INSERT OR REPLACE INTO reconcile_run VALUES (1,9,10000,'reconcile',0,NULL)")
+        conn.executemany("INSERT OR REPLACE INTO reconcile_emitter VALUES (9,?,NULL,0)", [("a",), ("b",)])
+
+
+def test_suspended_emitter_does_not_wedge_draining(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch)
+    fill_inbox(conn, ("a", "b"), rows=6000)
+    run_until(recon, 0.0, "draining")
+    runners[0].suspended = True
+    conn.execute("DELETE FROM adapter_deadlines WHERE emitter='b' AND priority=2")
+    recon.step(10**6)
+    assert recon.state == "stream"
+    assert conn.execute("SELECT COUNT(*) FROM adapter_deadlines WHERE emitter='a' AND priority=2").fetchone()[0] > 0
+
+
+def test_mixed_batch_never_charges_reconcile_work_as_live(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch, labels=("a",))
+    r = runners[0]
+    r.batch = 10
+    conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,?)",
+                     [("live1", 0), ("rec1", 2), ("rec2", 2)])
+    budget.tokens, budget.updated = 40.0, 0.0
+    r.tick(1.0)
+    sent = [c[1]["items"] for c in adapters.calls if "items" in c[1]]
+    assert sent == [["live1"]]
+    assert budget.reserved_total[rc.LIVE] == 10 and budget.reserved_total[rc.RECONCILE] == 0
+
+
+def test_stream_reconnect_waits_for_a_reserved_permit(tmp_path):
+    import change_stream
+    b = rc.RequestBudget(connect(tmp_path / "e.db"), 1.0, 40)
+    quipu = type("Q", (), {"base": "http://127.0.0.1:9"})()
+    s = change_stream.ChangeStream(quipu, 5, budgeted=True)
+    try:
+        assert s.want_connect.wait(2) and s.connects == 0     # asks, does not connect
+        s.grant(b, 0.0)                                       # bucket empty: no permit
+        assert s.connects == 0 and s.want_connect.is_set()
+        s.grant(b, 5.0)                                       # 5 tokens: one reserved
+        for _ in range(50):
+            if s.connects:
+                break
+            import time
+            time.sleep(0.05)
+        assert s.connects == 1 and b.reserved_total[rc.FEED] == 1
+    finally:
+        s.close()
+
+
+def test_daily_pass_also_waits_for_the_cooldown(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch)
+    conn.executemany("INSERT OR REPLACE INTO adapter_reconcile VALUES (?,?)", [("a", 0), ("b", 0)])
+    conn.execute("INSERT INTO reconcile_run VALUES (1,1,5000,'stream',0,200000)")
+    assert recon.reconcile_due(200_100) == "daily"
+    assert not recon.should_enter(200_100)                   # completed 100 s ago: cooldown holds
+    assert recon.should_enter(200_000 + 86_400)
+    conn.execute("DELETE FROM adapter_reconcile WHERE emitter='b'")
+    assert recon.should_enter(200_100)                       # a new subscription does not wait
