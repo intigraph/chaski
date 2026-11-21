@@ -1,0 +1,11 @@
+Script started on 2026-11-21 06:00:23-05:00 [COMMAND="python3 docs/demos/adapter-accounting/run.py" <not executed on terminal>]
+before: reservation=10, reported requests=2, refund=8
+adapter request/unknown metrics absent
+after: reservation=10, reported requests=2, refund=8
+chaski_adapter_quipu_requests_total 2
+chaski_adapter_quipu_accounting_unknown_total 0
+failed call with unknown cost:
+chaski_adapter_quipu_requests_total 2
+chaski_adapter_quipu_accounting_unknown_total 1
+
+Script done on 2026-11-21 06:00:23-05:00 [COMMAND_EXIT_CODE="0"]
