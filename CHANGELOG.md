@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/intigraph/chaski/compare/v0.7.1...v0.8.0) (2026-11-21)
+
+
+### Features
+
+* **metrics:** expose adapter request cost and unknown accounting ([#78](https://github.com/intigraph/chaski/issues/78)) ([310ba13](https://github.com/intigraph/chaski/commit/310ba13445c61a6d53821f3ea4575a60b6e9651d))
+* **outbox:** expire retained outbox firings with immutable receipts and delivery fences ([#72](https://github.com/intigraph/chaski/issues/72)) ([7a700bc](https://github.com/intigraph/chaski/commit/7a700bccd32a320cc88aa61bb4d0007dd3f0e0c9))
+* **reconcile:** catch up after downtime without replay, under one request budget (C1) ([#77](https://github.com/intigraph/chaski/issues/77)) ([d238c52](https://github.com/intigraph/chaski/commit/d238c52e5810315cd74487b728f3bae756a77063))
+
+
+### Bug Fixes
+
+* **emitter:** bound the incremental drain and back off refused sink setup ([#76](https://github.com/intigraph/chaski/issues/76)) ([34390f9](https://github.com/intigraph/chaski/commit/34390f9c4a70919679c42b696d80a997f8ef8210))
+* **graph:** select receiver-compatible writer vocabulary ([#79](https://github.com/intigraph/chaski/issues/79)) ([8673f3c](https://github.com/intigraph/chaski/commit/8673f3c840b5d00512785bc3622f45d40b74b644))
+
 ## [0.7.1](https://github.com/intigraph/chaski/compare/v0.7.0...v0.7.1) (2026-11-14)
 
 
