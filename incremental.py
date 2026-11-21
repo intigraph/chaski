@@ -222,7 +222,11 @@ class ChangeRunner(Runner):
         if not rb.try_reserve(cls, self.call_requests, now):
             raise NotAdmitted()
         # A failed call keeps its whole reservation: an error storm stays bounded.
-        out = call(self.emitter, dict(request, budget={"max_requests": self.call_requests}))
+        try:
+            out = call(self.emitter, dict(request, budget={"max_requests": self.call_requests}))
+        except Exception:
+            rb.adapter_accounting_unknown()
+            raise
         before = rb.violations.get(self.emitter.label, 0)
         self._last_cost = rb.settle(self.call_requests, out.get("cost"), self.emitter.label)
         if rb.violations.get(self.emitter.label, 0) > before:

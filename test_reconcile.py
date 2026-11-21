@@ -486,3 +486,60 @@ def test_daily_pass_also_waits_for_the_cooldown(tmp_path, monkeypatch):
     assert recon.should_enter(200_000 + 86_400)
     conn.execute("DELETE FROM adapter_reconcile WHERE emitter='b'")
     assert recon.should_enter(200_100)                       # a new subscription does not wait
+
+
+def test_adapter_metrics_count_reported_cost_not_reserved_budget(tmp_path, monkeypatch):
+    conn, budget, runners, _, _, _ = build(tmp_path, monkeypatch, labels=("a",))
+    assert not budget.try_reserve(rc.LIVE, 1, 1000)
+    budget.try_reserve(rc.LIVE, 1, 1100)
+    # A ten-request reservation makes only two reads; the counter must be two,
+    # while the existing refund and persistent safety budget retain their meaning.
+    monkeypatch.setattr(inc, "call", lambda *_: {"cost": {"quipu_requests": 2}})
+    runners[0]._call(rc.LIVE, {"items": []}, 1100)
+    metrics = "\n".join(budget.metrics(str))
+    assert "chaski_adapter_quipu_requests_total 2\n" in metrics
+    assert "chaski_adapter_quipu_accounting_unknown_total 0\n" in metrics
+    assert budget.refunded_total == 8
+    conn.close()
+
+
+def test_failed_adapter_keeps_charge_and_exposes_unknown_cost(tmp_path, monkeypatch):
+    conn, budget, runners, _, _, _ = build(tmp_path, monkeypatch, labels=("a",))
+    assert not budget.try_reserve(rc.LIVE, 1, 1000)
+    budget.try_reserve(rc.LIVE, 1, 1100)
+    tokens = budget.tokens
+    def fail(*_):
+        raise ProtocolError("failed after an unknown number of HTTP attempts")
+    monkeypatch.setattr(inc, "call", fail)
+    with pytest.raises(ProtocolError):
+        runners[0]._call(rc.LIVE, {"items": []}, 1100)
+    assert budget.tokens == tokens - 10
+    assert budget.refunded_total == 0
+    metrics = "\n".join(budget.metrics(str))
+    assert "chaski_adapter_quipu_requests_total 0\n" in metrics
+    assert "chaski_adapter_quipu_accounting_unknown_total 1\n" in metrics
+    conn.close()
+
+
+def test_malformed_cost_is_unknown_not_reported_requests(tmp_path):
+    budget = rc.RequestBudget(connect(tmp_path / "e.db"), 1, 40)
+    assert budget.settle(10, {"quipu_requests": 11}, "a") == 10
+    assert budget.adapter_requests_total == 0
+    assert budget.adapter_accounting_unknown_total == 1
+    assert budget.violations == {"a": 1}
+
+
+def test_failed_discovery_exposes_unknown_cost(tmp_path, monkeypatch):
+    conn, budget, _, recon, _, _ = build(tmp_path, monkeypatch, labels=("a",))
+    fill_inbox(conn, ("a",))
+    def fail(*_):
+        raise ProtocolError("discovery transport failed")
+    monkeypatch.setattr(inc, "call", fail)
+    for now in range(1000, 1100):
+        recon.step(now)
+        if budget.adapter_accounting_unknown_total:
+            break
+    assert budget.adapter_accounting_unknown_total > 0
+    assert budget.adapter_requests_total == 0
+    assert budget.refunded_total == 0
+    conn.close()

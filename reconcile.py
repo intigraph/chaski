@@ -89,6 +89,9 @@ class RequestBudget:
         self.last_grant: dict[int, float] = {}
         self.reserved_total = {c: 0 for c in CLASS_NAMES}
         self.refunded_total = 0
+        # Completed adapter cost reports only. Unknown calls never become zero.
+        self.adapter_requests_total = 0
+        self.adapter_accounting_unknown_total = 0
         self.violations: dict[str, int] = {}
 
     def _refill(self, now: float) -> None:
@@ -134,10 +137,13 @@ class RequestBudget:
         and counted as a violation; the caller suspends that emitter."""
         actual = cost.get("quipu_requests") if isinstance(cost, dict) else None
         if type(actual) is not int or not 0 <= actual <= reserved:
+            self.adapter_accounting_unknown()
             self.violations[label] = self.violations.get(label, 0) + 1
             LOG.warning("adapter %s reported no valid cost (%r) for a %d-request reservation",
                         label, cost, reserved)
             return reserved
+        with self.lock:
+            self.adapter_requests_total += actual
         refund = reserved - actual
         if refund:
             with self.lock:
@@ -145,6 +151,11 @@ class RequestBudget:
                 self.refunded_total += refund
                 self._persist()
         return actual
+
+    def adapter_accounting_unknown(self) -> None:
+        """A failed/malformed adapter has no exact cost; retain the budget charge."""
+        with self.lock:
+            self.adapter_accounting_unknown_total += 1
 
     def due(self, k: int, now: float, cls: int | None = None) -> float:
         """When to try again: refill time for k tokens, and never sooner than a
@@ -157,7 +168,19 @@ class RequestBudget:
             return at
 
     def metrics(self, esc) -> list[str]:
-        lines = [f"chaski_budget_tokens {self.tokens:.3f}",
+        with self.lock:
+            requests = self.adapter_requests_total
+            unknown = self.adapter_accounting_unknown_total
+        lines = [
+                 "# HELP chaski_adapter_quipu_requests_total Requests in valid adapter cost reports; "
+                 "also check accounting_unknown.",
+                 "# TYPE chaski_adapter_quipu_requests_total counter",
+                 f"chaski_adapter_quipu_requests_total {requests}",
+                 "# HELP chaski_adapter_quipu_accounting_unknown_total Calls with unknown request cost; "
+                 "never treat as zero requests.",
+                 "# TYPE chaski_adapter_quipu_accounting_unknown_total counter",
+                 f"chaski_adapter_quipu_accounting_unknown_total {unknown}",
+                 f"chaski_budget_tokens {self.tokens:.3f}",
                  f"chaski_budget_rate_requests_per_second {self.rate}",
                  f"chaski_budget_burst_requests {self.burst}",
                  f"chaski_budget_refunded_total {self.refunded_total}"]
@@ -389,6 +412,7 @@ class Reconciler:
             out = call(runner.emitter, request)
         except Exception as exc:  # noqa: BLE001
             # A failed page spends its whole reservation; the run stays in RECONCILE.
+            self.budget.adapter_accounting_unknown()
             self.unknown += 1
             LOG.warning("reconcile discover %s UNKNOWN (page retried later): %s", label, exc)
             return False
