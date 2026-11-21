@@ -319,7 +319,8 @@ class FakeAM(AlertmanagerSink):
 
 class FakeGraph(QuipuFiringSink):
     def __init__(self):
-        super().__init__("http://localhost", None, {"label": "control"})
+        super().__init__("http://localhost", None, {"label": "control"},
+                         vocabulary="canonical-vocabulary")
         self.rows = [{"p": NS + "eventId", "e": PRIOR["event_id"]}]
         self.ends = []
         self.writes = []

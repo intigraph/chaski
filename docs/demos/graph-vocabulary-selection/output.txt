@@ -1,0 +1,7 @@
+Script started on 2026-11-21 07:35:57-05:00 [COMMAND="python3 docs/demos/graph-vocabulary-selection/demo.py" <not executed on terminal>]
+before: canonical writer; compatible with legacy receiver=False
+after: explicit default legacy-vocabulary; compatible=True
+canonical opt-in: compatible=False until receiver profile activation
+PASS: same instance identity; distinct retained vocabulary scopes; no HTTP or data writes
+
+Script done on 2026-11-21 07:35:57-05:00 [COMMAND_EXIT_CODE="0"]

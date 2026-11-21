@@ -475,6 +475,10 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
                 raise RuleError(f"emitter {d['label']}: alertmanager sink needs {need}")
         if "graph" in kinds:
             g = d["sink"]["graph"]
+            import graph_sink
+            vocabulary = g.get("vocabulary", graph_sink.DEFAULT_VOCABULARY)
+            if not isinstance(vocabulary, str) or vocabulary not in graph_sink.VOCABULARIES:
+                raise RuleError(f"emitter {d['label']}: invalid graph vocabulary")
             need = [f for f in ("severity", "action", "condition", "comment") if not g.get(f)]
             if need:
                 raise RuleError(f"emitter {d['label']}: graph sink needs the Reaction fields {need}")
@@ -549,7 +553,9 @@ def make_sink(e: emitter.Emitter, sink: dict, quipu_url: str):
                 "condition": g["condition"], "comment": g["comment"]}
     if e.externally_triggered:
         reaction.update(trigger_kind="event", event_types=e.event)
-    graph = graph_sink.QuipuFiringSink(quipu_url, token, reaction)
+    graph = graph_sink.QuipuFiringSink(
+        quipu_url, token, reaction,
+        vocabulary=g.get("vocabulary", graph_sink.DEFAULT_VOCABULARY))
     if not {"command", "alertmanager"} & set(sink):
         return graph
     import alertmanager_sink

@@ -13,7 +13,9 @@ REACTION = {'label': 'fixture', 'condition': 'ASK {}', 'schedule': 'PT1M',
             'severity': 'info', 'action': ['notice'], 'owner': 'fixture', 'comment': 'fixture'}
 EVENT = {'event_id': 'event-1', 'item': 'https://example.test/focus', 'observed_at': 1790400000}
 def measure(label, module):
-    sink = module.QuipuFiringSink('https://unused.example.test', None, REACTION, ns='urn:fixture:')
+    selected = {'vocabulary': 'canonical-vocabulary'} if module is graph_sink else {}
+    sink = module.QuipuFiringSink('https://unused.example.test', None, REACTION,
+                                  ns='urn:fixture:', **selected)
     bodies = sink.reaction_turtle() + sink.firing_turtle(EVENT)
     old = any('<' + sink.ns + name + '>' in bodies for name in graph_sink._VOCABULARY)
     identity = module.firing_iri('fixture', EVENT['event_id'], 'urn:fixture:')

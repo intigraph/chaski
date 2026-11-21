@@ -41,6 +41,9 @@ _VOCABULARY = {**{name: QUIPU + name for name in
     **{name: CORE + name for name in ("action", "condition", "eventId", "eventTypes",
         "firedBy", "focus", "startedAt", "triggerKind", "resolvedAt")}}
 VOCABULARY_VERSION = "intigraph-owned-a389be53/v1"
+LEGACY_VOCABULARY_VERSION = "aegis-legacy/v1"
+DEFAULT_VOCABULARY = "legacy-vocabulary"
+VOCABULARIES = (DEFAULT_VOCABULARY, "canonical-vocabulary")
 
 
 def term(name):
@@ -100,9 +103,18 @@ class QuipuFiringSink:
     label, schedule, condition, severity, action (list), owner, comment."""
 
     def __init__(self, base: str, token: str | None, reaction: dict,
-                 ns: str = NS, timeout: float = 30.0):
+                 ns: str = NS, timeout: float = 30.0, *,
+                 vocabulary: str = DEFAULT_VOCABULARY):
+        if not isinstance(vocabulary, str) or vocabulary not in VOCABULARIES:
+            raise ValueError("graph vocabulary must be legacy-vocabulary or canonical-vocabulary")
         self.base, self.token, self.reaction, self.ns, self.timeout = base.rstrip("/"), token, reaction, ns, timeout
+        self.vocabulary = vocabulary
         self._reaction_written = False
+
+    def _term(self, name: str) -> str:
+        # Instance identity never allocates writer vocabulary.
+        canonical = term(name)
+        return NS + name if self.vocabulary == DEFAULT_VOCABULARY else canonical
 
     def _post(self, path: str, body: dict) -> dict:
         req = urllib.request.Request(
@@ -133,16 +145,16 @@ class QuipuFiringSink:
         kind = r.get("trigger_kind", "schedule")
         if kind not in {"schedule", "event"}:
             raise ValueError("reaction trigger kind must be schedule or event")
-        event_types = (f"  <{term('eventTypes')}> {_lit(r['event_types'])} ;\n"
+        event_types = (f"  <{self._term('eventTypes')}> {_lit(r['event_types'])} ;\n"
                        if kind == "event" else "")
         return (
-            f"<{self.reaction_iri()}> a <{term('Reaction')}> ;\n"
+            f"<{self.reaction_iri()}> a <{self._term('Reaction')}> ;\n"
             f"  <http://www.w3.org/2000/01/rdf-schema#label> {_lit(r['label'])} ;\n"
-            f"  <{term('triggerKind')}> {_lit(kind)} ; <{term('schedule')}> {_lit(r['schedule'])} ;\n"
+            f"  <{self._term('triggerKind')}> {_lit(kind)} ; <{self._term('schedule')}> {_lit(r['schedule'])} ;\n"
             f"{event_types}"
-            f"  <{term('condition')}> {_lit(r['condition'])} ;\n"
-            f"  <{term('severity')}> {_lit(r['severity'])} ; <{term('action')}> {actions} ;\n"
-            f"  <{term('owner')}> {_lit(r['owner'])} ;\n"
+            f"  <{self._term('condition')}> {_lit(r['condition'])} ;\n"
+            f"  <{self._term('severity')}> {_lit(r['severity'])} ; <{self._term('action')}> {actions} ;\n"
+            f"  <{self._term('owner')}> {_lit(r['owner'])} ;\n"
             f"  <http://www.w3.org/2000/01/rdf-schema#comment> {_lit(r['comment'])} .\n"
         )
 
@@ -151,11 +163,11 @@ class QuipuFiringSink:
         started = started.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         focus = event["item"] if "://" in event["item"] else f"{self.ns}{event['item']}"
         return (
-            f"<{firing_iri(self.reaction['label'], event['event_id'], self.ns)}> a <{term('ReactionFiring')}> ;\n"
-            f"  <{term('firedBy')}> <{self.reaction_iri()}> ;\n"
-            f"  <{term('focus')}> <{focus}> ;\n"
-            f"  <{term('startedAt')}> \"{started}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;\n"
-            f"  <{term('eventId')}> {_lit(event['event_id'])} .\n"
+            f"<{firing_iri(self.reaction['label'], event['event_id'], self.ns)}> a <{self._term('ReactionFiring')}> ;\n"
+            f"  <{self._term('firedBy')}> <{self.reaction_iri()}> ;\n"
+            f"  <{self._term('focus')}> <{focus}> ;\n"
+            f"  <{self._term('startedAt')}> \"{started}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;\n"
+            f"  <{self._term('eventId')}> {_lit(event['event_id'])} .\n"
         )
 
     def _term_aliases(self, name):
@@ -232,8 +244,10 @@ class QuipuFiringSink:
             raise ConnectionError(f"{iri}: written but not found on read-back (indeterminate)")
 
     def delivery_scope(self) -> dict:
+        version = (LEGACY_VOCABULARY_VERSION if self.vocabulary == DEFAULT_VOCABULARY
+                   else VOCABULARY_VERSION)
         return {"kind": "quipu", "base": self.base, "namespace": self.ns,
-                "reaction": self.reaction["label"], "vocabulary": VOCABULARY_VERSION}
+                "reaction": self.reaction["label"], "vocabulary": version}
 
     def prepare_recovery(self, event: dict) -> dict:
         prior = event["prior"]
@@ -251,7 +265,7 @@ class QuipuFiringSink:
             raise ConnectionError("missing or ambiguous prior graph firing")
         prior_ends = [(self._expand(r.get("p")), _datetime_value(r["e"])) for r in rows
                       if self._expand(r.get("p")) in self._term_aliases("resolvedAt")]
-        receipt = {"iri": iri, "predicate": term("resolvedAt"),
+        receipt = {"iri": iri, "predicate": self._term("resolvedAt"),
                    "delivery_scope": self.delivery_scope()}
         if prior_ends:
             if len(prior_ends) != 1:
