@@ -81,7 +81,8 @@ EVENT = {"event_id": "sha256:aa", "event": "unblocked", "emitter": "workitem-unb
 class Sink(unittest.TestCase):
     def setUp(self):
         self.q = FakeQuipu()
-        self.sink = gs.QuipuFiringSink(self.q.url, "t", REACTION, timeout=5)
+        self.sink = gs.QuipuFiringSink(self.q.url, "t", REACTION, timeout=5,
+                                      vocabulary="canonical-vocabulary")
 
     def tearDown(self):
         self.q.server.shutdown()
@@ -241,7 +242,8 @@ class QuechuaDualRead(unittest.TestCase):
 
     def setUp(self):
         self.q = FakeQuipu()
-        self.sink = gs.QuipuFiringSink(self.q.url, "t", REACTION, timeout=5)
+        self.sink = gs.QuipuFiringSink(self.q.url, "t", REACTION, timeout=5,
+                                      vocabulary="canonical-vocabulary")
         self.firing = gs.firing_iri(REACTION["label"], EVENT["event_id"])
 
     def tearDown(self):

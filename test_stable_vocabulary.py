@@ -19,7 +19,8 @@ PRIOR = {'emitter': 'fixture', 'event_id': 'event-1'}
 
 class StableVocabulary(unittest.TestCase):
     def sink(self, ns=OLD):
-        return gs.QuipuFiringSink('https://unused.example.test', None, REACTION, ns=ns)
+        return gs.QuipuFiringSink('https://unused.example.test', None, REACTION, ns=ns,
+                                  vocabulary='canonical-vocabulary')
 
     def test_writer_terms_match_the_published_crosswalk_and_unknown_refuses(self):
         rows = json.loads((Path(__file__).parent / 'tests/fixtures/chaski-ownership.json').read_text())
