@@ -315,3 +315,27 @@ The ledger (`ledger:`, mode 0600) holds two tables:
 
 Chaski's emitter metrics (`chaski_emitter_*{emitter="github-routing"}`)
 count the queued, pending and delivered requests.
+
+
+### Restricting a staged lane
+
+`defaults.enabled_kinds` and each repository's `enabled_kinds` accept a list of
+work kinds. Omitted lists preserve all existing kinds; a repository list replaces
+the default, and `[]` disables all work for that repository. Unknown kinds and
+duplicates are configuration errors. For a conflict/merge-stalled first lane:
+
+```yaml
+defaults:
+  enabled_kinds: [conflict, merge-stalled]
+  stale_prs:
+    enabled: true
+    approved_after_minutes: 120
+```
+
+Both adapter candidate discovery and receiver admission enforce this list. Old
+pending requests for a disabled kind are refused before a receiver ledger claim,
+item creation or dispatch. Existing `stale_prs.enabled` remains required too.
+This restriction does not activate an emitter, bind a receiver or authorize a
+restart. Conflict and merge-stalled requests still route to named crew work;
+they do not launch ephemeral jobs. A job-launch acceptance requires a separately
+reviewed execution path and observed real delivery.

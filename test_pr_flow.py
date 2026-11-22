@@ -208,3 +208,44 @@ def test_default_off_conflict_preserves_legacy_merge_and_review(tmp_path):
         decisions = gr.evaluate_repo(config, config.repos[REPO], snapshot(episodes, words), [], now)
         assert expected in {d.kind for d in decisions.values()}
         assert not {'conflict', 'merge-stalled'} & {d.kind for d in decisions.values()}
+
+
+@pytest.mark.parametrize("kinds", [None, "review", ["unknown"], ["review", "review"], [{}]])
+def test_enabled_kinds_rejects_invalid_allowlist(tmp_path, kinds):
+    doc = cfg_doc(tmp_path)
+    doc['repos'][REPO]['enabled_kinds'] = kinds
+    with pytest.raises(gr.ConfigError, match='enabled_kinds'):
+        gr.parse_config(doc)
+
+
+def test_first_lane_excludes_review_and_merge_but_keeps_stalled(tmp_path):
+    doc = cfg_doc(tmp_path)
+    doc['defaults'] = {'enabled_kinds': ['conflict', 'merge-stalled']}
+    doc['repos'][REPO]['stale_prs'] = {'enabled': True}
+    config = gr.parse_config(doc)
+    episodes = [ep(n) for n in BASE]
+    now = ts(GREEN_AT) + 20000
+    assert events_for(config, episodes, now) == {}
+    events = events_for(config, episodes, now, [verdict('reviewer')], {PR177: 'author'})
+    assert set(events) == {'merge-stalled'}
+    assert gw.parse_request(events['merge-stalled'], config)['route'] == 'administrator'
+    doc['repos'][REPO]['enabled_kinds'] = []
+    disabled = gr.parse_config(doc)
+    assert events_for(disabled, episodes, now, [verdict('reviewer')], {PR177: 'author'}) == {}
+
+
+def test_disabled_pending_request_refused_before_any_receiver_effect(tmp_path):
+    config = gr.parse_config(cfg_doc(tmp_path))
+    now = ts(GREEN_AT) + 20000
+    event = events_for(config, [ep(n) for n in BASE], now)['review']
+    doc = cfg_doc(tmp_path)
+    doc['repos'][REPO]['enabled_kinds'] = ['conflict', 'merge-stalled']
+    restricted = gr.parse_config(doc)
+    class NoEffects:
+        def __getattr__(self, name):
+            pytest.fail(f'disabled work reached effect: {name}')
+    with pytest.raises(gw.RequestError, match='work kind is disabled'):
+        gw.deliver(event, restricted, NoEffects(), NoEffects(), NoEffects(), now)
+    assert not (tmp_path / 'work.db').exists()
+    assert not (tmp_path / 'items.jsonl').exists()
+    assert not (tmp_path / 'spawns.jsonl').exists()
