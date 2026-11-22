@@ -249,3 +249,21 @@ def test_disabled_pending_request_refused_before_any_receiver_effect(tmp_path):
     assert not (tmp_path / 'work.db').exists()
     assert not (tmp_path / 'items.jsonl').exists()
     assert not (tmp_path / 'spawns.jsonl').exists()
+
+
+
+def test_review_only_candidate_respects_two_hour_deadline(tmp_path):
+    doc = cfg_doc(tmp_path)
+    doc['repos'][REPO].update(enabled_kinds=['review'], review_after_minutes=120)
+    config = gr.parse_config(doc)
+    adapter = gr.Adapter(config, gr.FixtureFacts([ep(n) for n in BASE], [], {PR177: 'author'}))
+    now = ts(GREEN_AT)
+    items = adapter.discover(now + 7199)
+    before = adapter.evaluate(items, now + 7199)['records']
+    assert len(before) == 1 and before[0]['work_kind'] == 'review'
+    assert before[0]['verdict'] == gr.WAIT
+    # Fresh adapter: production evaluation is snapshot-scoped, not a cached clock.
+    adapter = gr.Adapter(config, gr.FixtureFacts([ep(n) for n in BASE], [], {PR177: 'author'}))
+    after = adapter.evaluate(adapter.discover(now + 7200), now + 7200)['records']
+    assert len(after) == 1 and after[0]['work_kind'] == 'review'
+    assert after[0]['verdict'] == gr.READY
