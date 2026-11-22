@@ -114,6 +114,7 @@ class FactsUnknown(RuntimeError):
 # --------------------------------------------------------------------------- config
 
 DEFAULTS = {
+    "enabled_kinds": list(KINDS),
     "default_branch": "main",
     "review_after_minutes": 15,
     "required_checks": [],
@@ -139,6 +140,7 @@ class RepoConfig:
     release_jobs: tuple[str, ...]
     include_prereleases: bool
     release_window_s: int
+    enabled_kinds: tuple[str, ...] = KINDS
     stale_prs_enabled: bool = False
     approved_after_s: int = 7200
 
@@ -247,6 +249,11 @@ def parse_config(doc: dict) -> Config:
 
 def _repo_config(name: str, d: dict) -> RepoConfig:
     key = f"repos.{name}"
+    kinds = d["enabled_kinds"]
+    if (not isinstance(kinds, list)
+            or any(not isinstance(k, str) or k not in KINDS for k in kinds)
+            or len(set(kinds)) != len(kinds)):
+        raise ConfigError(f"{key}.enabled_kinds must be a duplicate-free subset of {list(KINDS)}")
     branch = d["default_branch"]
     if not isinstance(branch, str) or not branch:
         raise ConfigError(f"{key}.default_branch must be a branch name")
@@ -268,7 +275,7 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
     spacing = _int(d["merge"]["spacing_minutes"], f"{key}.merge.spacing_minutes", 0, 1440)
     lease = _int(d["merge"]["lease_minutes"], f"{key}.merge.lease_minutes", 1, 1440)
     return RepoConfig(
-        name=name, default_branch=branch,
+        name=name, default_branch=branch, enabled_kinds=tuple(kinds),
         review_after_s=60 * _int(d["review_after_minutes"], f"{key}.review_after_minutes", 0, 10080),
         required_checks=tuple(checks), approval_sources=tuple(sources),
         merge_enabled=d["merge"]["enabled"], spacing_s=60 * spacing, lease_s=60 * lease,
@@ -844,6 +851,8 @@ def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[
     open_prs = [p for p in prs.values() if p["state"] == "open" and not p["draft"]]
 
     def put(kind, subject, revision, verdict, next_check, facts):
+        if kind not in repo_cfg.enabled_kinds:
+            return
         item = item_key(kind, repo, subject, revision)
         out[item] = Decision(item, kind, verdict, next_check, facts)
 

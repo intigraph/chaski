@@ -41,3 +41,28 @@ All new behavior is opt-in. Live use also requires the additive Camayoc schema,
 mergeability observations, trusted review/author producers, runner credentials,
 reader registration and read-cost admission. Source tests do not prove those
 runtime gates are satisfied. No timer, job or receiver is armed by this change.
+
+
+## Staged event-to-review acceptance
+
+The staged deployment separates two paths. Conflict work stays assigned to its
+declared author, and merge-stalled work goes to the queue owner. Neither path
+is counted as an ephemeral job. Restrict that Chaski lane with
+`enabled_kinds: [conflict, merge-stalled]`; keep its other job routes disabled.
+
+The real event-launched-job acceptance belongs to the review lane: an exact
+head that remains green and unreviewed for two hours becomes eligible for the
+separately admitted scoped recruiter (aegis-cj5). Use that recruiter, rather
+than enabling the legacy Chaski direct review spawner alongside it. The generic
+adapter's `review_after_minutes: 120` can express the deadline; this alone does
+not connect it to the recruiter's protected receiver or prove that interface
+is installed. Preserve one owner for the request and the recruiter's existing
+signed custody, exact-head/non-author checks, deduplication and native launch
+gates. A source fixture or a routed work item does not satisfy acceptance.
+
+Count success only after a real event is linked through the current eligible
+head and admitted recruiter to a live native review-job ledger/card and verified
+startup delivery. Retain refusal or unknown launch results without replaying
+them as new attempts. Runtime installation and activation remain under their
+own gates, together with the held Chaski restart/watch and brief serving cutover;
+this documentation supplies no listener, credential move or activation.
