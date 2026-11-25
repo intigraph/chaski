@@ -83,6 +83,20 @@ def test_enabling_requires_a_trigger_name_and_the_receiver_checker():
         gr.parse_config({**doc(), "release_assets": {"checker_argv": [], "release_argv": ["gh", "api"]}})
 
 
+def test_a_backstop_at_or_past_the_release_window_is_refused():
+    # Otherwise a release with no trigger ages out of the window before its
+    # backstop arms, and is never judged (ian, chaski #81 review).
+    for minutes, hours in ((24 * 60, 24), (300, 4)):
+        with pytest.raises(gr.ConfigError, match="shorter than release.window_hours"):
+            gr.parse_config(doc(release_assets={"trigger_check_run": TRIGGER, "backstop_minutes": minutes},
+                                release={"window_hours": hours}))
+    ok = gr.parse_config(doc(release_assets={"trigger_check_run": TRIGGER, "backstop_minutes": 24 * 60 - 1},
+                             release={"window_hours": 24}))
+    assert ok.repos[REPO].asset_backstop_s == (24 * 60 - 1) * 60
+    # the bound only applies when the kind is enabled
+    gr.parse_config(doc(enabled=False, release_assets={"trigger_check_run": None, "backstop_minutes": 10080}))
+
+
 # ---------------------------------------------------------------- adapter
 
 def test_waits_for_the_trigger_with_the_backstop_as_its_only_time_arm():

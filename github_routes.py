@@ -316,6 +316,11 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
     if "release-assets" in kinds and trigger is None:
         raise ConfigError(f"{key}: release-assets needs release_assets.trigger_check_run")
     backstop = _int(d["release_assets"]["backstop_minutes"], f"{key}.release_assets.backstop_minutes", 1, 10080)
+    window_h = _int(d["release"]["window_hours"], f"{key}.release.window_hours", 1, 720)
+    if "release-assets" in kinds and 60 * backstop >= 3600 * window_h:
+        # A release older than the window is no longer a candidate, so a
+        # backstop at or past it would let an unjudged release age out silently.
+        raise ConfigError(f"{key}.release_assets.backstop_minutes must be shorter than release.window_hours")
     spacing = _int(d["merge"]["spacing_minutes"], f"{key}.merge.spacing_minutes", 0, 1440)
     lease = _int(d["merge"]["lease_minutes"], f"{key}.merge.lease_minutes", 1, 1440)
     return RepoConfig(
