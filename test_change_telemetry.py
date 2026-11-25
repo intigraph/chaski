@@ -106,3 +106,23 @@ def test_cursor_unknown_before_first_commit_and_no_stream_series(tmp_path):
         assert 'chaski_changes_stream_events_received_total' not in metrics
     finally:
         feed.conn.close()
+
+
+def test_change_lag_is_never_the_minus_one_sentinel(tmp_path):
+    # aegis-ssvr B: a paused consumer reported lag -1 while 113k transactions behind.
+    feed = feed_at()
+    try:
+        reactor = Reactor(SimpleNamespace(), [], tmp_path / 'state', 60)
+        reactor.change_feed = feed
+        metrics = reactor.metrics()
+        assert 'chaski_changes_lag_transactions -1' not in metrics
+        assert '\nchaski_changes_lag_transactions ' not in metrics
+        assert 'chaski_changes_lag_known 0\n' in metrics
+        feed.cursor_tx = 1_333_398
+        feed.note_head(1_447_035, 1_795_616_815.0)
+        metrics = reactor.metrics()
+        assert 'chaski_changes_lag_transactions 113637\n' in metrics
+        assert 'chaski_changes_lag_known 1\n' in metrics
+        assert 'chaski_changes_head_observed_timestamp_seconds 1795616815\n' in metrics
+    finally:
+        feed.conn.close()

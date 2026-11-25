@@ -309,6 +309,26 @@ class Reconciler:
             labels).fetchone()[0]
 
     # --- entry ------------------------------------------------------------------
+    def sample_head(self, now: float, every_s: float = 60.0) -> bool:
+        """While paused, read the head at most once per `every_s`, as one FEED
+        request from the shared budget, so the reported lag stays measurable
+        (a paused feed accepts no pages, so nothing else observes the head)."""
+        note = getattr(self.feed, "note_head", None)
+        if note is None or not self.paused:
+            return False
+        last = getattr(self.feed, "head_observed_at", None)
+        if last is not None and now - last < every_s:
+            return False
+        if not self.budget.try_reserve(FEED, 1, now):
+            return False
+        try:
+            note(self.head(), now)
+        except Exception as exc:  # noqa: BLE001
+            self.unknown += 1
+            LOG.warning("paused head sample UNKNOWN (lag kept UNKNOWN or stale): %s", exc)
+            return False
+        return True
+
     def reconcile_due(self, now: float) -> str | None:
         """'new' for a changed subscription (no stored pass), 'daily' when the
         catalogue pass is due. The pass is stamped when a run COMPLETES."""
@@ -355,6 +375,9 @@ class Reconciler:
             self.unknown += 1
             LOG.warning("reconcile entry refused: head %s is behind the cursor %s", target, cursor[0])
             return False
+        note = getattr(self.feed, "note_head", None)
+        if note is not None:
+            note(target, now)
         row = self.run()
         run_id = (row[0] + 1) if row else 1
         self.conn.execute("BEGIN IMMEDIATE")
