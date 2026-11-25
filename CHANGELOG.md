@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0](https://github.com/intigraph/chaski/compare/v0.8.0...v0.9.0) (2026-11-25)
+
+
+### Features
+
+* **emitter:** one-time reviewed recovery scope migration (aegis-ssvr) ([73023bd](https://github.com/intigraph/chaski/commit/73023bdb57ef9d8070211592695ee2a01eb6c9bc))
+* **emitter:** one-time reviewed recovery scope migration (aegis-ssvr) ([25b32f1](https://github.com/intigraph/chaski/commit/25b32f12f0e87f65ec101a07128397d97b6ed16b))
+* **github-routes:** opt-in release-assets kind, one judgment per release ([#81](https://github.com/intigraph/chaski/issues/81)) ([571a179](https://github.com/intigraph/chaski/commit/571a1796d81ba2a166a5fafdb36362abd8b78fe1))
+
+
+### Bug Fixes
+
+* **emitter:** durable migration log opened before the transaction ([#85](https://github.com/intigraph/chaski/issues/85) review) ([571ca42](https://github.com/intigraph/chaski/commit/571ca42f102e045bb47b4c28d40fda5f2df3ce32))
+* **github-routes:** refuse a release-assets backstop at or past the window ([#83](https://github.com/intigraph/chaski/issues/83)) ([a8ed818](https://github.com/intigraph/chaski/commit/a8ed818656bde64da05480956dd100d6e20b24da))
+* **metrics:** report change lag as observed watermark minus cursor, never -1 ([4475e5a](https://github.com/intigraph/chaski/commit/4475e5ad95ff5332b2ce304f8565eb876a00509b))
+* **metrics:** report change lag as observed watermark minus cursor, never -1 ([7fe8be8](https://github.com/intigraph/chaski/commit/7fe8be80f59e77e49d044efdf43a3f88be758f91))
+
 ## [0.8.0](https://github.com/intigraph/chaski/compare/v0.7.1...v0.8.0) (2026-11-22)
 
 
