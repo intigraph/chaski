@@ -23,6 +23,13 @@ The rules, all declared in one YAML file (github-routing.example.yaml):
   triage   The latest run of a workflow on the default branch is red.
   install / announce
            A release was published (per-repo job list).
+  release-assets
+           OFF unless listed in a repo's enabled_kinds. ONE judgment request
+           per published release: READY on the first completion of the
+           repo's `release_assets.trigger_check_run` on the release tag's
+           commit (tag push fact refs/tags/<tag> -> after sha), else at
+           published + `backstop_minutes`, the only time arm. The check run
+           and the backstop share one item key, so they never both file.
 
 Idempotency: the item key names (kind, repo, subject, revision) and the event
 id is a hash of the key, so one request exists per (repo, PR, head sha, kind)
@@ -83,7 +90,12 @@ def _read_class(subject, name):
             if canonical is not None else legacy)
 SCHEMA = "chaski.github.work-request/v1"
 WAIT, READY = "WAIT", "READY"
-KINDS = ("review", "merge", "outside-contribution", "triage", "install", "announce", "conflict", "merge-stalled")
+KINDS = ("review", "merge", "outside-contribution", "triage", "install", "announce", "conflict", "merge-stalled",
+         "release-assets")
+# Kinds a repo gets when it does not list enabled_kinds. release-assets is
+# opt-in only (aegis-7zkl): it must be named explicitly to run anywhere.
+OPT_IN_KINDS = ("release-assets",)
+DEFAULT_KINDS = tuple(k for k in KINDS if k not in OPT_IN_KINDS)
 RELEASE_JOBS = ("install", "announce")
 GREEN = {"success", "skipped", "neutral"}
 RED = {"failure", "timed_out", "startup_failure", "cancelled_by_failure"}
@@ -114,7 +126,7 @@ class FactsUnknown(RuntimeError):
 # --------------------------------------------------------------------------- config
 
 DEFAULTS = {
-    "enabled_kinds": list(KINDS),
+    "enabled_kinds": list(DEFAULT_KINDS),
     "default_branch": "main",
     "review_after_minutes": 15,
     "required_checks": [],
@@ -123,6 +135,7 @@ DEFAULTS = {
     "triage": {"enabled": True},
     "stale_prs": {"enabled": False, "approved_after_minutes": 120},
     "release": {"jobs": list(RELEASE_JOBS), "include_prereleases": False, "window_hours": 24},
+    "release_assets": {"trigger_check_run": None, "backstop_minutes": 180},
 }
 
 
@@ -140,9 +153,11 @@ class RepoConfig:
     release_jobs: tuple[str, ...]
     include_prereleases: bool
     release_window_s: int
-    enabled_kinds: tuple[str, ...] = KINDS
+    enabled_kinds: tuple[str, ...] = DEFAULT_KINDS
     stale_prs_enabled: bool = False
     approved_after_s: int = 7200
+    asset_trigger: str | None = None
+    asset_backstop_s: int = 10800
 
 
 @dataclass
@@ -201,7 +216,7 @@ def parse_config(doc: dict) -> Config:
                              or any(c in crew["st_bin"] for c in ('\0', '\n', '\r'))):
         raise ConfigError("crew review st_bin must name one executable")
     known = {"version", "graph", "administrator", "members", "ledger", "window_days", "defaults", "repos",
-             "work_items", "spawner", "review_predicate", "crew_reviews"}
+             "work_items", "spawner", "review_predicate", "crew_reviews", "release_assets"}
     if set(doc) - known:
         raise ConfigError(f"unknown top-level field(s) {sorted(set(doc) - known)}")
     graph = doc.get("graph")
@@ -235,6 +250,9 @@ def parse_config(doc: dict) -> Config:
         merged = {k: (_section(base[k], override.get(k), f"repos.{name}.{k}") if isinstance(base[k], dict)
                       else override.get(k, base[k])) for k in DEFAULTS}
         repos[name] = _repo_config(name, merged)
+    checker = doc.get("release_assets")
+    if checker is not None or any("release-assets" in r.enabled_kinds for r in repos.values()):
+        _checker_config(checker)
     ledger = doc.get("ledger")
     if ledger is not None and not isinstance(ledger, str):
         raise ConfigError("ledger must be a path")
@@ -245,6 +263,26 @@ def parse_config(doc: dict) -> Config:
                   ledger=Path(ledger).expanduser() if ledger else None,
                   window_days=_int(doc.get("window_days", 30), "window_days", 1, 365),
                   repos=repos, raw=doc, review_predicate=predicate)
+
+
+def _argv(value, key: str) -> list[str]:
+    if (not isinstance(value, list) or not value
+            or any(not isinstance(a, str) or not a or any(c in a for c in ("\0", "\n", "\r")) for a in value)):
+        raise ConfigError(f"{key} must be a non-empty argv list")
+    return value
+
+
+def _checker_config(doc) -> dict:
+    """The receiver's release asset checker (camayoc release_asset_check.py)."""
+    if not isinstance(doc, dict) or set(doc) - {"checker_argv", "release_argv", "actor", "timeout_s"}:
+        raise ConfigError("release_assets needs checker_argv and release_argv (and optional actor, timeout_s)")
+    _argv(doc.get("checker_argv"), "release_assets.checker_argv")
+    _argv(doc.get("release_argv"), "release_assets.release_argv")
+    if "actor" in doc and (not isinstance(doc["actor"], str) or not LOGIN.match(doc["actor"])):
+        raise ConfigError("release_assets.actor must be an agent login")
+    if "timeout_s" in doc:
+        _int(doc["timeout_s"], "release_assets.timeout_s", 1, 900)
+    return doc
 
 
 def _repo_config(name: str, d: dict) -> RepoConfig:
@@ -272,6 +310,12 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
                         ("release.include_prereleases", d["release"]["include_prereleases"])):
         if type(value) is not bool:
             raise ConfigError(f"{key}.{flag} must be true or false")
+    trigger = d["release_assets"]["trigger_check_run"]
+    if trigger is not None and (not isinstance(trigger, str) or not trigger.strip()):
+        raise ConfigError(f"{key}.release_assets.trigger_check_run must name a check run")
+    if "release-assets" in kinds and trigger is None:
+        raise ConfigError(f"{key}: release-assets needs release_assets.trigger_check_run")
+    backstop = _int(d["release_assets"]["backstop_minutes"], f"{key}.release_assets.backstop_minutes", 1, 10080)
     spacing = _int(d["merge"]["spacing_minutes"], f"{key}.merge.spacing_minutes", 0, 1440)
     lease = _int(d["merge"]["lease_minutes"], f"{key}.merge.lease_minutes", 1, 1440)
     return RepoConfig(
@@ -284,7 +328,8 @@ def _repo_config(name: str, d: dict) -> RepoConfig:
         release_window_s=3600 * _int(d["release"]["window_hours"], f"{key}.release.window_hours", 1, 720),
         stale_prs_enabled=d["stale_prs"]["enabled"],
         approved_after_s=60 * _int(d["stale_prs"]["approved_after_minutes"],
-                                   f"{key}.stale_prs.approved_after_minutes", 1, 10080))
+                                   f"{key}.stale_prs.approved_after_minutes", 1, 10080),
+        asset_trigger=trigger, asset_backstop_s=60 * backstop)
 
 
 # --------------------------------------------------------------------------- keys
@@ -372,7 +417,7 @@ def _intv(value):
 
 ROW_FIELDS = ("a", "kind", "at", "actor", "sha", "state", "merged", "draft", "base", "status", "conclusion",
               "attempt", "review", "pre", "e", "etype", "num", "author", "name", "tag", "url", "thread", "tnum",
-              "mergeable", "mergeable_state", "base_sha", "created")
+              "mergeable", "mergeable_state", "base_sha", "created", "ref")
 
 
 def normalize_row(raw: dict) -> dict:
@@ -386,7 +431,7 @@ def normalize_row(raw: dict) -> dict:
     for k in ("a", "e", "thread"):
         row[k] = None if row[k] is None else str(expand_ref(row[k]))
     for k in ("kind", "at", "actor", "sha", "state", "base", "status", "conclusion", "review", "author", "name",
-              "tag", "url", "mergeable_state", "base_sha", "created"):
+              "tag", "url", "mergeable_state", "base_sha", "created", "ref"):
         row[k] = None if row[k] is None else str(row[k])
     if row["review"]:
         row["review"] = row["review"].lower()
@@ -436,10 +481,11 @@ def activity_query(graph: str, repo: str, since: str) -> str:
         ("githubBaseSha", "base_sha")))
     eopt = "".join(" OPTIONAL { " + _read_pattern("?e", p, "?"+v) + "}" for p, v in (
         ("githubNumber", "num"), ("githubAuthorLogin", "author"), ("githubName", "name"),
-        ("githubTagName", "tag"), ("githubUrl", "url"), ("githubCreatedAt", "created")))
+        ("githubTagName", "tag"), ("githubUrl", "url"), ("githubCreatedAt", "created"),
+        ("githubRef", "ref")))
     return ("SELECT ?a ?kind ?at ?actor ?sha ?state ?merged ?draft ?base ?status "
             "?conclusion ?attempt ?review ?pre ?e ?etype ?num ?author ?name ?tag ?url ?thread ?tnum "
-            "?mergeable ?mergeable_state ?base_sha ?created WHERE { GRAPH <"+graph+"> { "
+            "?mergeable ?mergeable_state ?base_sha ?created ?ref WHERE { GRAPH <"+graph+"> { "
             + _read_pattern("?repo", "githubFullName", _q(repo))
             + _read_class("?a", "GitHubActivity")
             + _read_pattern("?a", "inGitHubRepository", "?repo")
@@ -582,7 +628,7 @@ def rows_from_episodes(episodes: list[dict]) -> list[dict]:
                 "attempt": p.get("githubRunAttempt"), "review": p.get("reviewState"),
                 "pre": p.get("githubPrerelease"), "e": AEGIS + subject["name"], "etype": AEGIS + subject["type"],
                 "num": sp.get("githubNumber"), "author": sp.get("githubAuthorLogin"), "name": sp.get("githubName"),
-                "tag": sp.get("githubTagName"), "url": sp.get("githubUrl"),
+                "tag": sp.get("githubTagName"), "url": sp.get("githubUrl"), "ref": sp.get("githubRef"),
                 "thread": AEGIS + thread["name"] if thread else None,
                 "tnum": (thread or {}).get("properties", {}).get("githubNumber")}))
     return out
@@ -933,7 +979,56 @@ def evaluate_repo(cfg: Config, repo_cfg: RepoConfig, snap: Snapshot, lane: list[
             put(job, f"release/{r['tag']}", local(r["e"]), READY, None, {
                 "repo": repo, "tag": r["tag"], "release": local(r["e"]), "url": r["url"],
                 "prerelease": bool(r["pre"]), "published_at": r["at"]})
+
+    # (e) release-assets: one judgment request per release (opt-in)
+    if "release-assets" in repo_cfg.enabled_kinds:
+        for subject, revision, verdict, next_check, facts in release_asset_requests(repo_cfg, rows, now):
+            put("release-assets", subject, revision, verdict, next_check, facts)
     return out
+
+
+def release_asset_requests(repo_cfg: RepoConfig, rows: list[dict], now: float):
+    """(subject, revision, verdict, next_check, facts) per published release.
+
+    The item key is (release-assets, repo, release/<tag>, release node), with
+    no trigger in it, so the trigger check run, the backstop and any replay
+    are ONE request and at most one judgment is dispatched per release. The
+    first observed trigger wins and is recorded in the facts. Later judgments
+    (a re-run after a late upload) belong to the fix job, not to a second
+    request.
+    """
+    releases: dict[str, dict] = {}
+    for r in rows:
+        if r["etype"] != "GitHubRelease" or r["kind"] not in ("release.published", "release.released"):
+            continue
+        if r["pre"] and not repo_cfg.include_prereleases:
+            continue
+        if r["ts"] is None or not r["tag"] or not r["e"]:
+            continue
+        prev = releases.get(r["e"])
+        if prev is None or (r["ts"], r["a"] or "") < (prev["ts"], prev["a"] or ""):
+            releases[r["e"]] = r
+    for e, rel in sorted(releases.items()):
+        if now - rel["ts"] > repo_cfg.release_window_s:
+            continue  # bounded: enabling the kind never re-judges old releases
+        tag = rel["tag"]
+        shas = {r["sha"] for r in rows if r["etype"] == "GitHubPush" and r["ref"] == f"refs/tags/{tag}"
+                and r["sha"] and SHA.match(r["sha"])}
+        runs = [r for r in rows if r["etype"] == "GitHubCheckRun" and (r["kind"] or "").startswith("check_run.")
+                and r["name"] == repo_cfg.asset_trigger and r["status"] == TERMINAL_RUN
+                and r["conclusion"] and r["sha"] in shas and r["ts"] is not None]
+        deadline = rel["ts"] + repo_cfg.asset_backstop_s
+        facts = {"repo": repo_cfg.name, "tag": tag, "release": local(e), "url": rel["url"],
+                 "published_at": rel["at"], "check_run": repo_cfg.asset_trigger, "backstop_at": iso(deadline)}
+        if runs:
+            run = min(runs, key=lambda r: (r["ts"], r["a"] or ""))
+            yield (f"release/{tag}", local(e), READY, None,
+                   {**facts, "trigger": "check-run", "as_of": run["at"], "head_sha": run["sha"],
+                    "conclusion": run["conclusion"]})
+        elif now >= deadline:
+            yield f"release/{tag}", local(e), READY, None, {**facts, "trigger": "backstop", "as_of": iso(deadline)}
+        else:
+            yield f"release/{tag}", local(e), WAIT, deadline, {**facts, "trigger": None}
 
 
 def _merge_lane(cfg, repo_cfg, prs, candidates, lane, rows, now, put):

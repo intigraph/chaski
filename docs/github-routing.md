@@ -30,6 +30,7 @@ defaults, then per-repository overrides.
 | `outside-contribution` | Same condition, but the author is not in `members` | none: a seeds item assigned to the administrator |
 | `triage` | The latest run of a workflow or check on the default branch is red (a newer green run of the same workflow, or a passing re-run, supersedes it) | `st … --job triage` |
 | `install`, `announce` | A release was published inside `window_hours` (prereleases only if `include_prereleases`) | `st … --job task` |
+| `release-assets` | **Opt-in only.** A release published inside `window_hours` and either its `release_assets.trigger_check_run` completed on the release tag's commit, or `backstop_minutes` passed since publication | the checker first; `st … --job task` only when it judges incomplete |
 
 CI green means every workflow run and check run reported for that commit has
 completed with success, skipped or neutral, at least one exists, and every
@@ -332,10 +333,58 @@ defaults:
     approved_after_minutes: 120
 ```
 
-Both adapter candidate discovery and receiver admission enforce this list. Old
+Both adapter candidate discovery and receiver admission enforce this list. Omitted lists never include the opt-in
+`release-assets` kind. Old
 pending requests for a disabled kind are refused before a receiver ledger claim,
 item creation or dispatch. Existing `stale_prs.enabled` remains required too.
 This restriction does not activate an emitter, bind a receiver or authorize a
 restart. Conflict and merge-stalled requests still route to named crew work;
 they do not launch ephemeral jobs. A job-launch acceptance requires a separately
 reviewed execution path and observed real delivery.
+
+
+## Release asset judgments (`release-assets`, opt-in)
+
+The kind replaces a polling asset observation (aegis-7zkl). It is off unless a
+repository names it in `enabled_kinds`. It also needs a trigger and the
+receiver's checker:
+
+```yaml
+repos:
+  intigraph/quipu:
+    enabled_kinds: [release-assets]
+    release_assets:
+      trigger_check_run: Trusted repository share   # quipu release.yml repository-share
+      backstop_minutes: 180
+release_assets:                                     # the receiver's checker
+  checker_argv: [python3, /path/to/camayoc/scripts/release_asset_check.py]
+  release_argv: [gh, api]                           # reads repos/<repo>/releases/tags/<tag>
+  actor: hammond                                    # optional; defaults to administrator
+```
+
+**Trigger.** The release's commit is the `after` sha of the tag push fact
+(`GitHubPush`, `githubRef` = `refs/tags/<tag>`). The trigger is the first
+completed `GitHubCheckRun` named `trigger_check_run` on that sha. With no such
+run, the request becomes READY at published + `backstop_minutes`. That is the
+only time arm, and it covers a dead event path. Without a tag push fact the
+request waits for the backstop. It never guesses by time window.
+
+**One request per release.** The item key is
+`(release-assets, repo, release/<tag>, release node)`. The trigger is not in
+it, so the check run, the backstop and every replay produce one request id.
+The first observed trigger is recorded in the facts. The receiver judges once:
+
+| checker exit | receiver |
+|---|---|
+| 0 complete | state `complete`, receipt, nothing filed |
+| 3 incomplete | state `incomplete`, then ONE item and ONE ephemeral `task` job; a refused spawn retries the job, never the judgment |
+| 4 too early | state `too-early`, exit 75 (retry) |
+| 2 quarantined | state `unknown`, receipt, never paged |
+| other / read failure | state `check-retry`, exit 75 |
+
+A later judgment, such as the trigger job re-run after a late upload, belongs
+to the fix job. It is not a second request. The checker writes one governed
+fact per judgment, and the current verdict is the latest one, read at query
+time.
+
+Enabling it is a deployment step, kept separate from this source.

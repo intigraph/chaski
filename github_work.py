@@ -16,6 +16,12 @@ event never files a second item or spawns a second job.
     5. route=spawn: `st agent spawn --ephemeral --job <job> --item <id>`
        through a SpawnPort. Refused / cannot tell -> exit 75, lane released.
 
+release-assets requests (aegis-7zkl) first run the release asset checker
+(camayoc release_asset_check.py --post) on the release object read once:
+exit 0 complete -> receipt, nothing filed; exit 3 incomplete -> steps 3 and 5
+(ONE item, ONE ephemeral fix job); exit 4 too early -> retry later; exit 2
+quarantined -> recorded UNKNOWN, never paged; anything else -> retry.
+
 The ledger (SQLite) is the receiver's own state. Its `lane` table is the
 merge lane, read read-only by the adapter to order the queue.
 """
@@ -35,8 +41,14 @@ from pathlib import Path
 import github_routes as gr
 
 EX_TEMPFAIL = 75
-JOB_FOR_KIND = {"review": "review", "merge": "merge", "triage": "triage", "install": "task", "announce": "task"}
-TERMINAL = {"dispatched", "routed", "spent"}
+JOB_FOR_KIND = {"review": "review", "merge": "merge", "triage": "triage", "install": "task", "announce": "task",
+                "release-assets": "task"}
+TERMINAL = {"dispatched", "routed", "spent", "complete", "unknown"}
+# A release-assets request runs its checker only while it is NOT yet judged.
+# Once a judgment of incomplete is recorded, a retry of filing or spawning
+# goes straight to the item/job steps: it never re-runs the checker, so one
+# judgment pages at most once.
+NOT_JUDGED = {None, "claimed", "check-retry", "too-early"}
 CLAIM_TTL_S = 1200  # above the command sink's 900 s timeout: a crashed delivery's claim lapses
 OUTCOMES = {"merged", "blocked", "failed", "closed", "stopped"}
 
@@ -116,6 +128,14 @@ def parse_request(event: dict, cfg: gr.Config) -> dict:
             raise RequestError("conflict request lacks its declared author and exact conflict observation")
     elif "assignee" in req:
         raise RequestError("only a conflict request selects a declared author")
+    if kind == "release-assets":
+        tag = facts.get("tag")
+        if not isinstance(tag, str) or subject != f"release/{tag}" or facts.get("release") != revision:
+            raise RequestError("release-assets request does not name its own release")
+        if facts.get("trigger") not in ("check-run", "backstop") or gr.epoch(facts.get("as_of")) is None:
+            raise RequestError("release-assets request without its trigger and the trigger's instant")
+        if not isinstance(cfg.raw.get("release_assets"), dict):
+            raise RequestError("release asset checker is not configured")
     if kind == "merge":
         # Defence in depth: the adapter never emits a merge for an outside
         # author, and the receiver refuses to be the one that does.
@@ -455,6 +475,39 @@ class StubSpawner:
         return True, "stub: recorded, not spawned"
 
 
+class AssetChecker:
+    """Reads the GitHub release object once, then runs the reviewed checker.
+
+    Returns (exit code, detail). The checker owns the judgment and the one
+    governed fact; this port only carries its exit code back."""
+
+    def __init__(self, conf: dict, administrator: str):
+        self.checker = list(conf["checker_argv"])
+        self.release = list(conf["release_argv"])
+        self.actor = conf.get("actor", administrator)
+        self.timeout = float(conf.get("timeout_s", 300))
+
+    def check(self, req: dict, now: float) -> tuple[int, str]:
+        import tempfile
+        f = req["facts"]
+        p = _run([*self.release, f"repos/{req['repo']}/releases/tags/{f['tag']}"], timeout=self.timeout)
+        if p.returncode != 0:
+            raise Refused(f"release read failed: {(p.stderr or p.stdout).strip()[:200]}")
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as tmp:
+            tmp.write(p.stdout)
+            tmp.flush()
+            argv = [*self.checker, "--repo", req["repo"], "--release-json", tmp.name, "--actor", self.actor,
+                    "--trigger", f["trigger"]]
+            argv += ["--as-of", f["as_of"]] if f["trigger"] == "check-run" else ["--now", str(now)]
+            c = _run([*argv, "--post"], timeout=self.timeout)
+        return c.returncode, (c.stdout + c.stderr).strip()[-300:]
+
+
+def make_checker(cfg: gr.Config):
+    conf = cfg.raw.get("release_assets")
+    return AssetChecker(conf, cfg.administrator) if isinstance(conf, dict) else None
+
+
 def make_ports(cfg: gr.Config):
     items_conf = cfg.raw.get("work_items") or {}
     spawn_conf = cfg.raw.get("spawner") or {}
@@ -472,7 +525,8 @@ def make_ports(cfg: gr.Config):
 
 # --------------------------------------------------------------------------- deliver
 
-def deliver(event: dict, cfg: gr.Config, ledger: Ledger, items, spawner, now: float) -> tuple[int, str]:
+def deliver(event: dict, cfg: gr.Config, ledger: Ledger, items, spawner, now: float,
+            checker=None) -> tuple[int, str]:
     """(exit code, message). 0 = received (incl. duplicates), 75 = retry later."""
     req = parse_request(event, cfg)
     rid = req["request_id"]
@@ -483,9 +537,40 @@ def deliver(event: dict, cfg: gr.Config, ledger: Ledger, items, spawner, now: fl
     if row and row["state"] in TERMINAL:
         return 0, f"duplicate {rid[:12]}: already {row['state']} ({row['work_item']})"
     try:
+        if req["kind"] == "release-assets" and (row or {}).get("state") in NOT_JUDGED:
+            judged = _judge_release(req, ledger, checker, now)
+            if judged is not None:
+                return judged
         return _deliver_claimed(req, row, cfg, ledger, items, spawner, now)
     finally:
         ledger.unclaim(rid)
+
+
+def _judge_release(req, ledger, checker, now) -> tuple[int, str] | None:
+    """Run the checker. None = incomplete: go on and file ONE fix job."""
+    rid = req["request_id"]
+    if checker is None:
+        ledger.upsert(req, "check-retry", now, detail="release asset checker not configured", attempt=True)
+        return EX_TEMPFAIL, "release asset checker not configured"
+    try:
+        code, detail = checker.check(req, now)
+    except (Refused, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        ledger.upsert(req, "check-retry", now, detail=str(exc)[:300], attempt=True)
+        return EX_TEMPFAIL, str(exc)
+    if code == 0:
+        ledger.upsert(req, "complete", now, detail=detail)
+        return 0, f"release {req['facts']['tag']} assets complete ({rid[:12]}); nothing filed"
+    if code == 3:
+        ledger.upsert(req, "incomplete", now, detail=detail)
+        return None
+    if code == 2:
+        ledger.upsert(req, "unknown", now, detail=detail)
+        return 0, f"release {req['facts']['tag']} UNKNOWN (checker quarantined); not paged"
+    if code == 4:
+        ledger.upsert(req, "too-early", now, detail=detail, attempt=True)
+        return EX_TEMPFAIL, f"release {req['facts']['tag']} too early to judge"
+    ledger.upsert(req, "check-retry", now, detail=f"checker exited {code}: {detail}"[:300], attempt=True)
+    return EX_TEMPFAIL, f"checker exited {code}"
 
 
 def _deliver_claimed(req, row, cfg, ledger, items, spawner, now) -> tuple[int, str]:
@@ -568,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
             items, spawner = make_ports(cfg)
             try:
                 event = json.load(sys.stdin)
-                code, msg = deliver(event, cfg, ledger, items, spawner, time.time())
+                code, msg = deliver(event, cfg, ledger, items, spawner, time.time(), checker=make_checker(cfg))
             except (RequestError, ValueError) as exc:
                 # A malformed request is not a transient failure, but exit 0
                 # would checkpoint it as received. Fail loudly; it stays in
