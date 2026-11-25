@@ -481,9 +481,26 @@ class ChangeFeed:
         self.errors = 0
         self.ready = False
         self.cursor_tx = -1  # UNKNOWN until a durable page commit is observed
+        # The newest Quipu watermark this consumer has OBSERVED (a page, the
+        # reconcile pin or a paused head sample); -1 = never observed. Kept apart
+        # from `lag`, which drives reconcile entry and is unchanged.
+        self.head_tx = -1
+        self.head_observed_at = None
         self.poll_events_received = 0
         self.dirty = set()
         self.request_budget = None   # aegis-ssvr C1: each polled page costs one request
+
+    def note_head(self, tx, at):
+        """Record an observed watermark; never moves backwards."""
+        if type(tx) is int and tx >= 0 and tx >= self.head_tx:
+            self.head_tx, self.head_observed_at = tx, at
+
+    def lag_report(self):
+        """Transactions between the durable cursor and the newest observed
+        watermark, or None (UNKNOWN) when either is unknown. Never -1."""
+        if self.head_tx < 0 or self.cursor_tx < 0:
+            return None
+        return max(0, self.head_tx - self.cursor_tx)
 
     def take_dirty(self):
         dirty, self.dirty = self.dirty, set()
@@ -567,6 +584,8 @@ class ChangeFeed:
             raise
         self.lag = watermark - cursor
         self.cursor_tx = cursor
+        import time as _time
+        self.note_head(watermark, _time.time())
         self.ready = True
         self.dirty.update(dirty)
         if row is None:

@@ -312,6 +312,8 @@ class Reactor:
                     runners_due.update(self._runner_by_label)
                 self.deadlines.set(('reconcile', ''), self.reconciler.next_wakeup(now))
             paused = self.reconciler.paused
+            if paused:
+                self.reconciler.sample_head(now)
             if paused and self.change_stream is not None:
                 # No open server stream while discovering against a pinned watermark.
                 self.change_stream.close()
@@ -390,8 +392,22 @@ class Reactor:
                       "# TYPE chaski_event_poll_errors_total counter",
                       f"chaski_event_poll_errors_total {feed_errors}"]
             if self.change_feed is not None:
-                lines += [f"chaski_changes_lag_transactions {self.change_feed.lag}",
-                          f"chaski_changes_errors_total {self.change_feed.errors}"]
+                lag = self.change_feed.lag_report()
+                seen = self.change_feed.head_observed_at
+                lines += ["# HELP chaski_changes_lag_transactions Newest observed Quipu watermark "
+                          "minus the durable cursor; absent while UNKNOWN (see chaski_changes_lag_known).",
+                          "# TYPE chaski_changes_lag_transactions gauge"]
+                if lag is not None:
+                    lines.append(f"chaski_changes_lag_transactions {lag}")
+                lines += ["# HELP chaski_changes_lag_known 1 when the lag is measured, 0 when UNKNOWN.",
+                          "# TYPE chaski_changes_lag_known gauge",
+                          f"chaski_changes_lag_known {int(lag is not None)}"]
+                if seen is not None:
+                    lines += ["# HELP chaski_changes_head_observed_timestamp_seconds When the watermark "
+                              "behind the reported lag was observed.",
+                              "# TYPE chaski_changes_head_observed_timestamp_seconds gauge",
+                              f"chaski_changes_head_observed_timestamp_seconds {seen:.0f}"]
+                lines += [f"chaski_changes_errors_total {self.change_feed.errors}"]
                 lines += ["# HELP chaski_changes_cursor_offset Durable transaction cursor; "
                           "-1 means UNKNOWN. Not an /events offset.",
                           "# TYPE chaski_changes_cursor_offset gauge",

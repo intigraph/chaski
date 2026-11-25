@@ -543,3 +543,58 @@ def test_failed_discovery_exposes_unknown_cost(tmp_path, monkeypatch):
     assert budget.adapter_requests_total == 0
     assert budget.refunded_total == 0
     conn.close()
+
+
+# --- aegis-ssvr B: the reported change lag is never the -1 sentinel ----------------------
+
+class HeadFeed(Feed):
+    note_head = inc.ChangeFeed.note_head
+    lag_report = inc.ChangeFeed.lag_report
+
+    def __init__(self, cursor_tx=-1):
+        super().__init__()
+        self.cursor_tx, self.head_tx, self.head_observed_at = cursor_tx, -1, None
+
+
+def test_lag_is_unknown_not_minus_one_until_a_head_is_observed():
+    feed = HeadFeed(cursor_tx=100)
+    assert feed.lag_report() is None
+    feed.note_head(10_000, 5.0)
+    assert feed.lag_report() == 9_900
+    feed.note_head(9_000, 6.0)                         # an older watermark never moves it back
+    assert (feed.head_tx, feed.head_observed_at) == (10_000, 5.0)
+    assert HeadFeed().lag_report() is None             # cursor UNKNOWN stays UNKNOWN
+
+
+def test_paused_reconcile_samples_the_head_once_per_interval(tmp_path, monkeypatch):
+    conn, budget, runners, _recon, adapters, _feed = build(tmp_path, monkeypatch)
+    heads = iter([5_000, 6_000, 7_000])
+    reads = []
+
+    def head():
+        reads.append(1)
+        return next(heads)
+    feed = HeadFeed(cursor_tx=100)
+    recon = rc.Reconciler(conn, feed, runners, budget, page_requests=10, head=head)
+    budget.try_reserve(rc.LIVE, 1, 900.0)              # the persisted bucket starts empty
+    assert not recon.sample_head(1000.0)               # stream state: never sampled
+    conn.execute("INSERT OR REPLACE INTO reconcile_run VALUES (1,1,4000,'reconcile',0,NULL)")
+    assert recon.paused
+    assert recon.sample_head(1000.0) and feed.lag_report() == 4_900
+    assert not recon.sample_head(1030.0)               # inside the interval: no request
+    assert recon.sample_head(1061.0) and feed.lag_report() == 5_900
+    assert len(reads) == 2
+
+
+def test_a_failed_head_sample_keeps_the_last_measurement(tmp_path, monkeypatch):
+    conn, budget, runners, _recon, adapters, _feed = build(tmp_path, monkeypatch)
+
+    def head():
+        raise RuntimeError("quipu 408")
+    feed = HeadFeed(cursor_tx=100)
+    feed.note_head(900, 10.0)
+    recon = rc.Reconciler(conn, feed, runners, budget, page_requests=10, head=head)
+    budget.try_reserve(rc.LIVE, 1, 900.0)              # the persisted bucket starts empty
+    conn.execute("INSERT OR REPLACE INTO reconcile_run VALUES (1,1,4000,'reconcile',0,NULL)")
+    assert not recon.sample_head(1000.0)
+    assert feed.lag_report() == 800 and recon.unknown == 1
