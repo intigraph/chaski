@@ -85,6 +85,23 @@ CREATE TRIGGER IF NOT EXISTS outbox_dispositions_no_update
 CREATE TRIGGER IF NOT EXISTS outbox_dispositions_no_delete
  BEFORE DELETE ON outbox_dispositions BEGIN
  SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
+CREATE TABLE IF NOT EXISTS recovery_dispositions (
+    event_id TEXT NOT NULL PRIMARY KEY,
+    row_sha256 TEXT NOT NULL,
+    plan_sha256 TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition='expired-not-delivered'),
+    class TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    ruling_ref TEXT NOT NULL,
+    source_utc TEXT NOT NULL,
+    recorded_at REAL NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS recovery_dispositions_no_update
+ BEFORE UPDATE ON recovery_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS recovery_dispositions_no_delete
+ BEFORE DELETE ON recovery_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
 CREATE TABLE IF NOT EXISTS renewal_receipts (
     event_id TEXT PRIMARY KEY,
     last_received REAL,
@@ -203,6 +220,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS verdict_recovery_candidates ON verdicts(emitter,recovery_at)")
     try:
         verify_dispositions(conn)
+        verify_recovery_dispositions(conn)
     except BaseException:
         conn.close()
         raise
@@ -569,7 +587,7 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
     query = " UNION ALL ".join(
         f"SELECT event_id,payload,attempts,created,'{table}' AS source_table FROM {table}"
         " WHERE emitter=? AND delivered_at IS NULL AND next_attempt<=? AND "
-        + (undisposed(table) if table == "outbox" else "1") for table in tables)
+        + undisposed(table) for table in tables)
     args = [value for _ in tables for value in (emitter, now)] + [limit]
     rows = conn.execute(query + " ORDER BY created LIMIT ?", args).fetchall()
     ok = failed = 0
@@ -737,7 +755,7 @@ class Runner:
                 f" prior.event_id=json_extract({table}.payload,'$.resolution_of')"
                 " AND prior.delivered_at IS NOT NULL) THEN MAX(next_attempt,?)"
                 f" ELSE next_attempt END) FROM {table} WHERE emitter=? AND delivered_at IS NULL AND "
-                + (undisposed(table) if table == "outbox" else "1"),
+                + undisposed(table),
                 (now + 5, self.emitter.label)).fetchone()
             if row[0] is not None:
                 values.append(row[0])
@@ -807,7 +825,8 @@ class Runner:
         pending, oldest = self.conn.execute(
             "SELECT COUNT(*), MIN(created) FROM ("
             " SELECT created FROM outbox WHERE emitter=? AND delivered_at IS NULL AND " + undisposed("outbox") +
-            " UNION ALL SELECT created FROM recovery_outbox WHERE emitter=? AND delivered_at IS NULL)",
+            " UNION ALL SELECT created FROM recovery_outbox WHERE emitter=? AND delivered_at IS NULL AND "
+            + undisposed("recovery_outbox") + ")",
             (self.emitter.label, self.emitter.label)).fetchone()
         delivered = self.conn.execute(
             "SELECT (SELECT COUNT(*) FROM outbox WHERE emitter=? AND delivered_at IS NOT NULL)"
@@ -822,6 +841,9 @@ class Runner:
         disposed = self.conn.execute(
             "SELECT COUNT(*) FROM outbox_dispositions d JOIN outbox o ON o.event_id=d.event_id"
             " WHERE o.emitter=?", (self.emitter.label,)).fetchone()[0]
+        disposed += self.conn.execute(
+            "SELECT COUNT(*) FROM recovery_dispositions d JOIN recovery_outbox r ON r.event_id=d.event_id"
+            " WHERE r.emitter=?", (self.emitter.label,)).fetchone()[0]
         return {"disposed": disposed, "renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
                 "runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
@@ -862,6 +884,11 @@ def undisposed(alias):
     The row fingerprint is independently verified at startup and apply. Matching
     only the fingerprint here could accidentally release a changed row.
     """
+    if alias == 'recovery_outbox':
+        # aegis-ssvr: a reviewed one-time recovery migration may expire a
+        # recovery (recovery_migration.py). Same identity fence, own ledger.
+        return ("NOT EXISTS (SELECT 1 FROM recovery_dispositions disposition WHERE "
+                "disposition.event_id=recovery_outbox.event_id)")
     if alias not in ('outbox', 'o'):
         raise ValueError('invalid outbox alias')
     return ("NOT EXISTS (SELECT 1 FROM outbox_dispositions disposition WHERE "
@@ -896,6 +923,27 @@ def verify_dispositions(conn):
         disposition_eligible(row)
         if disposition_digest(row) != expected:
             raise ValueError('disposed row changed or disappeared; consumer remains fenced')
+    return len(rows)
+
+
+RECOVERY_IDENTITY_FIELDS = ("event_id", "emitter", "item", "generation", "payload", "created",
+                            "prior_event", "delivered_at")
+
+
+def recovery_identity(row):
+    """Immutable fields only: retry counters may move between review and apply."""
+    return disposition_digest({k: row[k] for k in RECOVERY_IDENTITY_FIELDS})
+
+
+def verify_recovery_dispositions(conn):
+    """An expired recovery stays retained, undelivered and unchanged (aegis-ssvr)."""
+    rows = conn.execute("SELECT event_id,row_sha256 FROM recovery_dispositions").fetchall()
+    for event_id, expected in rows:
+        cur = conn.execute("SELECT * FROM recovery_outbox WHERE event_id=?", (event_id,))
+        row = cur.fetchone()
+        row = None if row is None else dict(zip((d[0] for d in cur.description), row))
+        if row is None or row["delivered_at"] is not None or recovery_identity(row) != expected:
+            raise ValueError("disposed recovery changed or disappeared; consumer remains fenced")
     return len(rows)
 
 
