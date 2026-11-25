@@ -368,6 +368,10 @@ completed `GitHubCheckRun` named `trigger_check_run` on that sha. With no such
 run, the request becomes READY at published + `backstop_minutes`. That is the
 only time arm, and it covers a dead event path. Without a tag push fact the
 request waits for the backstop. It never guesses by time window.
+`backstop_minutes` must be shorter than `release.window_hours`; otherwise a
+release with no trigger would leave the window before its backstop arms. Keep it
+equal to the checker rule's `backstop_seconds`, or the checker answers too-early
+(exit 4) and the receiver retries until the rule's deadline.
 
 **One request per release.** The item key is
 `(release-assets, repo, release/<tag>, release node)`. The trigger is not in
