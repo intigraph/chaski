@@ -189,3 +189,49 @@ def test_cli_plan_apply_verify(world, capsys):
     assert json.loads(capsys.readouterr().out)["undelivered_unmigrated"] == {"refrozen-awaiting-delivery": 3}
     world["conn"] = em.connect(db)
     assert Path(log).stat().st_mode & 0o777 == 0o600
+
+
+def snapshot(w):
+    return (w["conn"].execute("SELECT * FROM recovery_outbox ORDER BY event_id").fetchall(),
+            w["conn"].execute("SELECT COUNT(*) FROM recovery_dispositions").fetchone()[0])
+
+
+def test_unusable_log_path_refuses_before_any_mutation(world):
+    """dearing #85 review: the log is opened before BEGIN, not after commit."""
+    p, digest = plan(world)
+    log = world["tmp"] / "exists.jsonl"
+    log.write_text("earlier run\n")
+    before = snapshot(world)
+    with pytest.raises(FileExistsError):
+        rm.apply_plan(world["conn"], p, digest, log)
+    assert snapshot(world) == before and log.read_text() == "earlier run\n"
+    assert send(world) == (0, 3)
+
+
+def test_refused_apply_leaves_no_log_and_no_mutation(world):
+    p, digest = plan(world)
+    world["conn"].execute("UPDATE recovery_outbox SET item='moved' WHERE event_id=?", (recovery_ids(world)[-1],))
+    before = snapshot(world)
+    log = world["tmp"] / "refused.jsonl"
+    with pytest.raises(ValueError, match="reviewed row changed"):
+        rm.apply_plan(world["conn"], p, digest, log)
+    assert snapshot(world) == before and not log.exists()
+
+
+def test_committed_apply_log_is_complete(world):
+    p, digest = plan(world)
+    log = world["tmp"] / "ok.jsonl"
+    rm.apply_plan(world["conn"], p, digest, log)
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert sorted(e["event_id"] for e in entries) == recovery_ids(world)
+    assert all(e["plan_sha256"] == digest for e in entries)
+
+
+def test_expire_row_that_left_its_class_refuses(world):
+    ids = recovery_ids(world)
+    world["conn"].execute("UPDATE recovery_outbox SET last_error=? WHERE event_id=?",
+                          ("missing or ambiguous prior graph firing", ids[0]))
+    p, digest = plan(world, refreeze=2, missing=1)
+    world["conn"].execute("UPDATE recovery_outbox SET last_error='other' WHERE event_id=?", (ids[0],))
+    with pytest.raises(ValueError, match="no longer in its reviewed class"):
+        rm.apply_plan(world["conn"], p, digest)

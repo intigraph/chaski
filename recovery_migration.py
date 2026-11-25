@@ -159,6 +159,27 @@ def apply_plan(conn, plan, expected_sha256, log_path=None):
     if conn.in_transaction:
         raise ValueError("migration requires its own transaction")
     log, now = [], time.time()
+    # The log is opened (exclusive, 0600) BEFORE the transaction and made durable
+    # BEFORE commit: an unusable path refuses with no mutation, and a committed
+    # migration always has its per-row record.
+    out = (os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w")
+           if log_path is not None else None)
+    try:
+        _apply_rows(conn, plan, digest, now, log, out)
+    except BaseException:
+        if out is not None:
+            out.close()
+            os.unlink(log_path)   # nothing committed: no log may claim otherwise
+        raise
+    if out is not None:
+        out.close()
+    actions = {}
+    for entry in log:
+        actions[entry["action"]] = actions.get(entry["action"], 0) + 1
+    return {"plan_sha256": digest, "actions": actions}
+
+
+def _apply_rows(conn, plan, digest, now, log, out):
     conn.execute("BEGIN IMMEDIATE")
     try:
         planned = {r["event_id"] for r in plan["rows"]}
@@ -184,6 +205,8 @@ def apply_plan(conn, plan, expected_sha256, log_path=None):
             else:
                 if current != r["row_sha256"]:
                     raise ValueError(f"{r['event_id']}: reviewed row changed")
+                if classify(row)[0] != r["class"]:
+                    raise ValueError(f"{r['event_id']}: row no longer in its reviewed class")
                 prior = conn.execute("SELECT plan_sha256,class FROM recovery_dispositions WHERE event_id=?",
                                      (r["event_id"],)).fetchone()
                 if prior is not None:
@@ -199,17 +222,14 @@ def apply_plan(conn, plan, expected_sha256, log_path=None):
                         "class": r["class"], "action": action, "before_sha256": r["row_sha256"],
                         "after_sha256": r.get("after_sha256"), "plan_sha256": digest, "at": now})
         em.verify_recovery_dispositions(conn)
+        if out is not None:
+            out.writelines(json.dumps(entry, sort_keys=True) + "\n" for entry in log)
+            out.flush()
+            os.fsync(out.fileno())
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    if log_path is not None:
-        with os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:
-            out.writelines(json.dumps(entry, sort_keys=True) + "\n" for entry in log)
-    actions = {}
-    for entry in log:
-        actions[entry["action"]] = actions.get(entry["action"], 0) + 1
-    return {"plan_sha256": digest, "actions": actions}
 
 
 def main(argv=None):

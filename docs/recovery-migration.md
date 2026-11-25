@@ -39,5 +39,8 @@ that every expired recovery is still present, undelivered and unchanged.
 4. `verify --db INBOX` reads only: verified receipts and the remaining
    undelivered recoveries by class.
 
-Rollback: restore the backup with the consumer still held. No sink or network
+Rollback: restore the backup with the consumer still held. Never roll back by
+restoring an older chaski pin alone: a consumer without `recovery_dispositions`
+ignores the expiry receipts and retries the expired rows, and the refrozen rows
+keep their new scope. No sink or network
 call is made by any action.
