@@ -4,7 +4,8 @@
 reviewed, append-only `expired-not-delivered` disposition. Original outbox rows,
 payloads, attempts, receiver bindings, delivery timestamps and cursors remain
 unchanged. A disposition is not a receiver receipt or acknowledgement. Recoveries
-require separate adjudication and cannot use this command.
+require separate adjudication and cannot use this command; see
+[recovery-migration.md](recovery-migration.md) for the reviewed one-time recovery path.
 
 Create a private plan from an existing database with `plan --db INBOX --plan PLAN
 --emitter LABEL --created-before UNIX_SECONDS --expected-count COUNT --reason
