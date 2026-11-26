@@ -149,6 +149,9 @@ class ChangeRunner(Runner):
     batch = BATCH
     cost_per_item = None
     adapter_budget = None
+    # aegis-g68w.14: after this many consecutive live evaluations while reconcile
+    # work is due, one reconcile batch runs (a bounded share, not strict priority).
+    RECONCILE_EVERY = 4
 
     def __init__(self, emitter, conn, sink, budget=None, adapter_budget=None,
                  request_budget=None, call_requests=40, max_batch=50):
@@ -164,6 +167,8 @@ class ChangeRunner(Runner):
         self.suspended = False   # an adapter broke its cost contract; UNKNOWN until restart
         self.batch = BATCH
         self.cost_per_item = None
+        self._kind_cost = {}      # call kind -> EWMA of the settled request cost
+        self._live_streak = 0     # consecutive live evaluations with reconcile work due
         conn.executescript(SCHEMA)
         prepare_inbox_projection(conn)
         self.subscription = call(emitter)
@@ -214,24 +219,45 @@ class ChangeRunner(Runner):
             isinstance(record.get(k), dict) and record[k].get("ref") in self.types
             for k in ("value", "old_value"))
 
-    def _call(self, cls, request, now):
+    def _reservation(self, kind, items=None):
+        """Requests to pre-reserve for one call of this kind (aegis-g68w.14).
+
+        The reservation is also the hard cap passed to the adapter, so the bucket
+        still never pays for more than it reserved. Sized from the measured cost
+        of the same kind of call with 25% headroom, never above call_requests; the
+        first call of a kind, and the call after any failure, reserve the full cap.
+        Reserving the full cap for every call held ~2.6x the tokens actually spent
+        and starved the drain behind them. An evaluation scales with its batch,
+        which _adapt_batch grows, so it reserves per item for the batch it sends."""
+        if kind == "evaluate" and items and self.cost_per_item is not None and kind in self._kind_cost:
+            return max(1, min(self.call_requests, math.ceil(self.cost_per_item * items * 1.25)))
+        ewma = self._kind_cost.get(kind)
+        if ewma is None:
+            return self.call_requests
+        return max(1, min(self.call_requests, math.ceil(ewma * 1.25)))
+
+    def _call(self, cls, request, now, kind="evaluate"):
         """One adapter call, pre-reserved against the global budget when it exists."""
         rb = self.request_budget
         if rb is None:
             return call(self.emitter, request)
-        if not rb.try_reserve(cls, self.call_requests, now):
+        reserve = self._reservation(kind, len(request.get("items") or ()))
+        if not rb.try_reserve(cls, reserve, now):
             raise NotAdmitted()
         # A failed call keeps its whole reservation: an error storm stays bounded.
         try:
-            out = call(self.emitter, dict(request, budget={"max_requests": self.call_requests}))
+            out = call(self.emitter, dict(request, budget={"max_requests": reserve}))
         except Exception:
             rb.adapter_accounting_unknown()
+            self._kind_cost.pop(kind, None)   # the next call of this kind reserves the full cap
             raise
         before = rb.violations.get(self.emitter.label, 0)
-        self._last_cost = rb.settle(self.call_requests, out.get("cost"), self.emitter.label)
+        self._last_cost = rb.settle(reserve, out.get("cost"), self.emitter.label)
         if rb.violations.get(self.emitter.label, 0) > before:
             self.suspended = True
             raise ProtocolError(f"emitter {self.emitter.label} broke its request-cost contract; suspended")
+        prev = self._kind_cost.get(kind)
+        self._kind_cost[kind] = self._last_cost if prev is None else 0.7 * prev + 0.3 * self._last_cost
         return out
 
     def reconcile(self, now):
@@ -276,7 +302,8 @@ class ChangeRunner(Runner):
             return False
         from reconcile import LIVE
         try:
-            out = self._call(LIVE, {"now": now, "route": [json.loads(r[2]) for r in pending]}, now)
+            out = self._call(LIVE, {"now": now, "route": [json.loads(r[2]) for r in pending]}, now,
+                             kind="route")
         except NotAdmitted:
             return False
         items = strings(out.get("items"))
@@ -302,7 +329,19 @@ class ChangeRunner(Runner):
             "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, limit)).fetchall()
         if self.request_budget is not None and selected and selected[0][1] < 2:
-            selected = [r for r in selected if r[1] < 2]   # never charge reconcile work as live
+            reconcile_due = self.conn.execute(
+                "SELECT 1 FROM adapter_deadlines WHERE emitter=? AND due<=? AND priority=2 LIMIT 1",
+                (label, now)).fetchone() is not None
+            if reconcile_due and self._live_streak >= self.RECONCILE_EVERY:
+                # Bounded share (aegis-g68w.14): strict live-first priority let a live
+                # backlog starve reconcile work indefinitely. Same budget, reordered.
+                selected = self.conn.execute(
+                    "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? AND priority=2"
+                    " ORDER BY due,item LIMIT ?", (label, now, limit)).fetchall()
+                self._live_streak = 0
+            else:
+                selected = [r for r in selected if r[1] < 2]   # never charge reconcile work as live
+                self._live_streak = self._live_streak + 1 if reconcile_due else 0
         items = [r[0] for r in selected]
         if not items:
             return False
@@ -400,7 +439,9 @@ class ChangeRunner(Runner):
         # adapter runs; bound the drain cadence so quipu load stays bounded.
         if self.request_budget is not None:
             from reconcile import LIVE
-            source_due = max(source_due, self.retry_at, self.request_budget.due(self.call_requests, now, LIVE))
+            kind = "route" if pending else "evaluate"
+            source_due = max(source_due, self.retry_at,
+                             self.request_budget.due(self._reservation(kind, self.batch), now, LIVE))
             if self.suspended or self.paused:
                 source_due = max(source_due, now + 60)
         else:

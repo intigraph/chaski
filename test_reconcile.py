@@ -647,3 +647,67 @@ def test_a_failed_head_sample_keeps_the_last_measurement(tmp_path, monkeypatch):
     conn.execute("INSERT OR REPLACE INTO reconcile_run VALUES (1,1,4000,'reconcile',0,NULL)")
     assert not recon.sample_head(1000.0)
     assert feed.lag_report() == 800 and recon.unknown == 1
+
+
+# --- aegis-g68w.14: reserve against measured cost; bounded reconcile share --------------
+
+def test_reservation_follows_measured_cost_and_returns_to_the_cap_after_a_failure(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch, labels=("a",))
+    r = runners[0]
+    r.batch = 2
+    def due(*items):
+        conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,0)",
+                         [(i,) for i in items])
+    due("x1", "x2")
+    budget.tokens, budget.updated = 40.0, 0.0
+    r.tick(1.0)                                            # no history: the full cap
+    caps = [c[1]["budget"]["max_requests"] for c in adapters.calls if "items" in c[1]]
+    assert caps == [10]
+    # The fake adapter reports 5 requests for 2 items: 2.5 per item. Two items with
+    # 25% headroom reserve ceil(2.5 * 2 * 1.25) = 7, and that is the cap it receives.
+    r.batch = 2
+    due("x3", "x4")
+    budget.tokens = 40.0
+    r.tick(2.0)
+    caps = [c[1]["budget"]["max_requests"] for c in adapters.calls if "items" in c[1]]
+    assert caps == [10, 7]
+    assert budget.reserved_total[rc.LIVE] == 17
+    # A failed call forgets the estimate: the next call reserves the full cap again.
+    def fail(emitter, request=None):
+        if request is not None and "items" in request:
+            raise ProtocolError("transport failed")
+        return adapters(emitter, request)
+    monkeypatch.setattr(inc, "call", fail)
+    due("x5")
+    budget.tokens = 40.0
+    r.tick(3.0)
+    monkeypatch.setattr(inc, "call", adapters)
+    r.retry_at = 0.0
+    budget.tokens = 40.0
+    r.tick(4.0)
+    caps = [c[1]["budget"]["max_requests"] for c in adapters.calls if "items" in c[1]]
+    assert caps[-1] == 10
+
+
+def test_reconcile_work_runs_within_a_bounded_number_of_live_batches(tmp_path, monkeypatch):
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch, labels=("a",))
+    r = runners[0]
+    conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,2)",
+                     [(f"rec{i}",) for i in range(3)])
+    classes = []
+    for step in range(12):
+        # A live backlog that never empties: a fresh live deadline before every tick.
+        conn.execute("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,0)",
+                     (f"live{step}",))
+        budget.tokens, budget.updated = 40.0, float(step)
+        before = dict(budget.reserved_total)
+        r.tick(float(step) + 0.5)
+        classes.append(rc.RECONCILE if budget.reserved_total[rc.RECONCILE] > before.get(rc.RECONCILE, 0)
+                       else rc.LIVE)
+    # Strict priority never ran reconcile work here; now it runs after every 4 live batches.
+    assert classes.index(rc.RECONCILE) == r.RECONCILE_EVERY
+    assert classes.count(rc.RECONCILE) >= 2
+    assert conn.execute("SELECT COUNT(*) FROM adapter_deadlines WHERE priority=2").fetchone()[0] < 3
+    # Each reconcile batch carries only reconcile items, charged to the reconcile class.
+    sent = [c[1]["items"] for c in adapters.calls if "items" in c[1]]
+    assert all(all(i.startswith("rec") for i in s) or all(i.startswith("live") for i in s) for s in sent)
