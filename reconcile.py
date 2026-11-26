@@ -267,6 +267,11 @@ class Reconciler:
         self.unknown = 0
         self.purge_seconds = None
         self.retry_at = 0.0
+        # Discovery progress (aegis-p1u4): the change cursor is static while a run
+        # discovers, so without these "slow" and "stuck" look identical from outside.
+        self.discover_pages = {}         # emitter -> successful pages since start
+        self.discover_items = {}         # emitter -> items those pages returned
+        self.discover_last_success = {}  # emitter -> wall time of the last committed page
 
     # --- state ------------------------------------------------------------------
     def run(self):
@@ -470,6 +475,12 @@ class Reconciler:
         except BaseException:
             self.conn.execute("ROLLBACK")
             raise
+        pages = self.discover_pages[label] = self.discover_pages.get(label, 0) + 1
+        self.discover_items[label] = self.discover_items.get(label, 0) + len(items)
+        self.discover_last_success[label] = now
+        LOG.info("reconcile discover %s page %d ok: run %s, %d items, cost %s, %s",
+                 label, pages, run_id, len(items), out.get("cost"),
+                 "complete" if complete else "more pages")
         return complete and len(pending) == 1
 
     # --- the cursor jump ----------------------------------------------------------
@@ -589,4 +600,17 @@ class Reconciler:
         lines += [f'chaski_reconcile_blocked_by{{emitter="{esc(label)}"}} 1' for label in self.blocking]
         if self.purge_seconds is not None:
             lines.append(f"chaski_reconcile_purge_seconds {self.purge_seconds:.3f}")
+        run = self.run()
+        if state == "reconcile" and run is not None:
+            # Phase per emitter of the active run: 1 once its discovery is complete.
+            for label, complete in self.conn.execute(
+                    "SELECT emitter,complete FROM reconcile_emitter WHERE run_id=? ORDER BY emitter",
+                    (run[0],)):
+                lines.append(f'chaski_reconcile_discover_complete{{emitter="{esc(label)}"}} {int(complete)}')
+        for label in sorted(self.discover_pages):
+            e = esc(label)
+            lines += [f'chaski_reconcile_discover_pages_total{{emitter="{e}"}} {self.discover_pages[label]}',
+                      f'chaski_reconcile_discover_items_total{{emitter="{e}"}} {self.discover_items[label]}',
+                      f'chaski_reconcile_discover_last_success_timestamp_seconds{{emitter="{e}"}}'
+                      f' {self.discover_last_success[label]:.3f}']
         return lines

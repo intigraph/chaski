@@ -545,6 +545,55 @@ def test_failed_discovery_exposes_unknown_cost(tmp_path, monkeypatch):
     conn.close()
 
 
+# --- aegis-p1u4: discovery progress is visible from outside ------------------------------
+
+def test_discovery_progress_moves_with_each_successful_page(tmp_path, monkeypatch, caplog):
+    conn, budget, _, recon, adapters, _ = build(tmp_path, monkeypatch, labels=("a", "b"))
+    fill_inbox(conn, ("a", "b"), rows=3000)
+    def page_metrics():
+        return {line.rsplit(" ", 1)[0]: float(line.rsplit(" ", 1)[1])
+                for line in recon.metrics(str, 10.0) if "discover" in line}
+    assert recon.should_enter(0.0)
+    now = 0.0
+    while recon.state == "stream" and now < 1000:   # the entering step discovers nothing
+        recon.step(now)
+        now += 1.0
+    assert recon.state == "reconcile" and page_metrics() == {'chaski_reconcile_discover_complete{emitter="a"}': 0,
+                              'chaski_reconcile_discover_complete{emitter="b"}': 0}
+    caplog.set_level("INFO", logger="chaski.reconcile")
+    seen = []
+    while recon.state == "reconcile" and now < 100_000:
+        recon.step(now)
+        m = page_metrics()
+        stamp = m.get('chaski_reconcile_discover_last_success_timestamp_seconds{emitter="a"}')
+        if stamp is not None and (not seen or seen[-1][1] != stamp):
+            seen.append((m['chaski_reconcile_discover_pages_total{emitter="a"}'], stamp))
+        now += 1.0
+    pages = [r for label, r in adapters.calls if label == "a" and r.get("discover")]
+    # One timestamp move per committed page, strictly increasing, pages counted 1..3.
+    assert [p for p, _ in seen] == [1, 2, 3] == list(range(1, len(pages) + 1))
+    assert all(a < b for (_, a), (_, b) in zip(seen, seen[1:]))
+    oks = [r.getMessage() for r in caplog.records if " page " in r.getMessage() and " ok:" in r.getMessage()]
+    assert len(oks) == 6 and oks[0].startswith("reconcile discover a page 1 ok:")
+    assert "3 items" in oks[0] and "more pages" in oks[0] and "complete" in oks[2]
+    # After the jump the run is no longer discovering: no phase series, counters kept.
+    m = page_metrics()
+    assert not any(k.startswith("chaski_reconcile_discover_complete") for k in m)
+    assert m['chaski_reconcile_discover_items_total{emitter="b"}'] == 7
+
+
+def test_a_failed_discover_page_does_not_move_progress(tmp_path, monkeypatch):
+    conn, budget, _, recon, _, _ = build(tmp_path, monkeypatch, labels=("a",))
+    fill_inbox(conn, ("a",), rows=6000)
+    def fail(*_):
+        raise ProtocolError("discovery transport failed")
+    monkeypatch.setattr(inc, "call", fail)
+    for now in range(1000, 1100):
+        recon.step(now)
+    assert recon.unknown > 0
+    assert not any("pages_total" in line or "last_success" in line for line in recon.metrics(str, 10.0))
+
+
 # --- aegis-ssvr B: the reported change lag is never the -1 sentinel ----------------------
 
 class HeadFeed(Feed):
