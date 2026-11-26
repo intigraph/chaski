@@ -689,6 +689,46 @@ def test_reservation_follows_measured_cost_and_returns_to_the_cap_after_a_failur
     assert caps[-1] == 10
 
 
+def test_reconcile_share_counts_route_calls_as_live_traffic(tmp_path, monkeypatch):
+    """The bounded share is over ALL live adapter calls, not only evaluate batches.
+
+    With a change arriving every tick, each tick makes a live route call AND an
+    evaluate call. Counting only evaluate batches let 9 live calls (5 routes and
+    4 live evaluates) run between reconcile batches, about half the intended share
+    (aegis-g68w.14, measured 4.7% of reservations in production against ~20%).
+    """
+    conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch, labels=("a",))
+    r = runners[0]
+    conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,2)",
+                     [(f"rec{i}",) for i in range(6)])
+    for step in range(30):
+        # Continuous live traffic: a fresh routed change and a fresh live deadline.
+        conn.execute("INSERT INTO change_inbox VALUES ('a',?,0,?)",
+                     (20_000 + step, json.dumps(change(20_000 + step, f"chg{step}"))))
+        conn.execute("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES ('a',?,0,0)",
+                     (f"live{step}",))
+        conn.commit()
+        budget.tokens, budget.updated = 40.0, float(step)
+        r.tick(float(step) + 0.5)
+    kinds = []
+    for _, request in adapters.calls:
+        if "route" in request:
+            kinds.append("route")
+        elif "items" in request:
+            kinds.append("reconcile" if all(i.startswith("rec") for i in request["items"]) else "live")
+    assert "route" in kinds and kinds.count("reconcile") >= 2
+    gaps, run = [], 0
+    for kind in kinds[kinds.index("reconcile") + 1:]:
+        if kind == "reconcile":
+            gaps.append(run)
+            run = 0
+        else:
+            run += 1
+    # A route call can land between the guard's check and the reconcile batch in
+    # the same tick, so the bound is RECONCILE_EVERY live calls plus that one.
+    assert gaps and max(gaps) <= r.RECONCILE_EVERY + 1, (gaps, kinds)
+
+
 def test_reconcile_work_runs_within_a_bounded_number_of_live_batches(tmp_path, monkeypatch):
     conn, budget, runners, recon, adapters, feed = build(tmp_path, monkeypatch, labels=("a",))
     r = runners[0]
