@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/intigraph/chaski/compare/v0.9.0...v0.10.0) (2026-11-26)
+
+
+### Features
+
+* **reconcile:** expose discovery progress per emitter (aegis-p1u4) ([172220a](https://github.com/intigraph/chaski/commit/172220a752da26aed8c13b9fb28e347582e05363))
+* **reconcile:** expose discovery progress per emitter (aegis-p1u4) ([38075d2](https://github.com/intigraph/chaski/commit/38075d29c121a402b0842c5087534072702c1594))
+
+
+### Bug Fixes
+
+* **incremental:** count route calls in the bounded reconcile share ([8694b95](https://github.com/intigraph/chaski/commit/8694b95658130a86ca7372d19fcf651d418f37da))
+* **incremental:** count route calls in the bounded reconcile share (aegis-g68w.14) ([65a92df](https://github.com/intigraph/chaski/commit/65a92df28a1ed528f4243e936f105d220a3b4435))
+* **incremental:** reserve by measured cost and give reconcile work a bounded share (aegis-g68w.14) ([4f4b86a](https://github.com/intigraph/chaski/commit/4f4b86af736b45239eda52f5e1d24106d7748dbc))
+* **incremental:** reserve by measured cost and give reconcile work a bounded share (aegis-g68w.14) ([624b7e5](https://github.com/intigraph/chaski/commit/624b7e5b38852922c30d62b74790cfcc907f00bc))
+
 ## [0.9.0](https://github.com/intigraph/chaski/compare/v0.8.0...v0.9.0) (2026-11-25)
 
 
