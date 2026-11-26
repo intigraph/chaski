@@ -168,7 +168,7 @@ class ChangeRunner(Runner):
         self.batch = BATCH
         self.cost_per_item = None
         self._kind_cost = {}      # call kind -> EWMA of the settled request cost
-        self._live_streak = 0     # consecutive live evaluations with reconcile work due
+        self._live_streak = 0     # consecutive live adapter calls (route or evaluate) with reconcile due
         conn.executescript(SCHEMA)
         prepare_inbox_projection(conn)
         self.subscription = call(emitter)
@@ -286,6 +286,11 @@ class ChangeRunner(Runner):
             self.conn.execute("ROLLBACK")
             raise
 
+    def _reconcile_due(self, now):
+        return self.conn.execute(
+            "SELECT 1 FROM adapter_deadlines WHERE emitter=? AND due<=? AND priority=2 LIMIT 1",
+            (self.emitter.label, now)).fetchone() is not None
+
     def route_pending(self, now):
         label = self.emitter.label
         # Unary + removes the frontier TEXT affinity, matching json_extract's
@@ -307,6 +312,10 @@ class ChangeRunner(Runner):
         except NotAdmitted:
             return False
         items = strings(out.get("items"))
+        if self.request_budget is not None:
+            # A route call is live traffic too: the bounded reconcile share is over
+            # every live adapter call, not only evaluate batches (aegis-g68w.14).
+            self._live_streak = self._live_streak + 1 if self._reconcile_due(now) else 0
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.executemany("INSERT INTO adapter_deadlines (emitter,item,due,priority) VALUES (?,?,?,0)"
@@ -329,9 +338,7 @@ class ChangeRunner(Runner):
             "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, limit)).fetchall()
         if self.request_budget is not None and selected and selected[0][1] < 2:
-            reconcile_due = self.conn.execute(
-                "SELECT 1 FROM adapter_deadlines WHERE emitter=? AND due<=? AND priority=2 LIMIT 1",
-                (label, now)).fetchone() is not None
+            reconcile_due = self._reconcile_due(now)
             if reconcile_due and self._live_streak >= self.RECONCILE_EVERY:
                 # Bounded share (aegis-g68w.14): strict live-first priority let a live
                 # backlog starve reconcile work indefinitely. Same budget, reordered.
