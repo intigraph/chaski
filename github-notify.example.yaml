@@ -23,3 +23,8 @@ ntfy:
   timeout_s: 10
 # Optional: prints the first line of the event at the URL appended to argv.
 # first_line: {argv: [/usr/local/bin/github-first-line]}
+# External-thread watch (chaski-github-watch, docs/github-watch.md) reads this
+# same file: the work item its draft jobs comment on, and the st job kind.
+watch:
+  item: aegis-za4f.7
+  job: triage
