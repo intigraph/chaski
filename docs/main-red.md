@@ -22,7 +22,7 @@ The PR-lifecycle line, with the branch in the PR slot:
 {"event_id": "<sha256 of repo|branch|head|task>", "repo": "intigraph/chaski",
  "pr": null, "branch": "main", "head": "<40-hex>", "job": "task",
  "item": "<seed id from the commit headline, or null>", "reason": "main-red",
- "failing": ["<check name>", "..."], "red_at": "<newest failed check start, UTC>",
+ "failing": ["<check name>", "..."], "red_at": "<newest failed check completion, UTC>",
  "observed_at": "<UTC>"}
 ```
 

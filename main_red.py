@@ -109,6 +109,10 @@ def failing(head: dict) -> list[dict] | None:
 def judge(head: dict) -> tuple[list[str], str | None] | None:
     """(failing check names, newest failure time) when the head is red, else None.
 
+    The failure time is when the check turned red (CheckRun completedAt), not
+    when it started, so event-to-spawn latency excludes CI run time; a check
+    with no completion time (a commit status) falls back to its `at`.
+
     Red needs only one failure, so a truncated check list that already shows
     one is still red; a truncated list with none is unknown, never green."""
     sha, branch = head.get("head"), head.get("branch")
@@ -120,7 +124,7 @@ def judge(head: dict) -> tuple[list[str], str | None] | None:
     if not bad:
         return None
     names = sorted({c.get("name") or "?" for c in bad})
-    stamps = [c["at"] for c in bad if c.get("at")]
+    stamps = [c.get("red_at") or c["at"] for c in bad if c.get("red_at") or c.get("at")]
     return names, (max(stamps) if stamps else None)
 
 
@@ -153,7 +157,7 @@ _HEAD = """
  defaultBranchRef { name target { ... on Commit { oid messageHeadline statusCheckRollup { contexts(first: 100) {
    pageInfo { hasNextPage }
    nodes { __typename
-     ... on CheckRun { name status conclusion startedAt }
+     ... on CheckRun { name status conclusion startedAt completedAt }
      ... on StatusContext { context state createdAt } } } } } } }
 """
 
@@ -175,7 +179,8 @@ def read_heads(cfg: Config) -> list[dict]:
         checks = None
         if rollup is not None:
             ctx = rollup["contexts"]
-            checks = pl.latest_per_name([pl._context(c) for c in ctx["nodes"]])
+            checks = pl.latest_per_name([{**pl._context(c), "red_at": c.get("completedAt")}
+                                         for c in ctx["nodes"]])
             if ctx["pageInfo"]["hasNextPage"]:
                 print(f"main-red: {repo}: more than 100 checks on {commit['oid'][:12]}; "
                       "only a failure among the first 100 counts (truncated)", file=sys.stderr)

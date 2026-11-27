@@ -96,7 +96,7 @@ def test_the_pr_lifecycle_config_serves_as_is():
 def test_read_heads_parses_the_graphql_shape(tmp_path, monkeypatch):
     rollup = {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": [
         {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
-         "startedAt": "2026-11-27T14:58:00Z"},
+         "startedAt": "2026-11-27T14:58:00Z", "completedAt": "2026-11-27T15:04:00Z"},
         {"__typename": "StatusContext", "context": "ci/x", "state": "SUCCESS", "createdAt": "2026-11-27T14:50:00Z"}]}}
     data = {"r0": {"defaultBranchRef": {"name": "main", "target": {"oid": SHA, "messageHeadline": "x aegis-dja",
                                                                    "statusCheckRollup": rollup}}},
@@ -105,7 +105,27 @@ def test_read_heads_parses_the_graphql_shape(tmp_path, monkeypatch):
     heads = mr.read_heads(cfg(tmp_path))
     assert len(heads) == 1  # quipu unreadable: skipped, not judged
     assert heads[0]["head"] == SHA and {c["name"] for c in heads[0]["checks"]} == {"test", "ci/x"}
-    assert mr.records(cfg(tmp_path), heads, NOW)[0]["action"]["failing"] == ["test"]
+    action = mr.records(cfg(tmp_path), heads, NOW)[0]["action"]
+    assert action["failing"] == ["test"]
+    assert action["red_at"] == "2026-11-27T15:04:00Z"  # turned red at completion, not start
+
+
+def test_red_at_falls_back_to_status_time_without_completion():
+    h = head(checks=[{"name": "ci/x", "state": "FAILURE", "at": "2026-11-27T14:50:00Z", "red_at": None}])
+    assert mr.judge(h) == (["ci/x"], "2026-11-27T14:50:00Z")
+
+
+def test_truncated_check_list_warns_and_still_judges_the_first_page(tmp_path, monkeypatch, capsys):
+    nodes = [{"__typename": "CheckRun", "name": "ok", "status": "COMPLETED", "conclusion": "SUCCESS",
+              "startedAt": "2026-11-27T14:58:00Z", "completedAt": "2026-11-27T15:00:00Z"}]
+    rollup = {"contexts": {"pageInfo": {"hasNextPage": True}, "nodes": nodes}}
+    data = {"r0": {"defaultBranchRef": {"name": "main", "target": {"oid": SHA, "messageHeadline": "x",
+                                                                   "statusCheckRollup": rollup}}},
+            "r1": None}
+    monkeypatch.setattr(mr.pl, "_graphql", lambda c, q: data)
+    heads = mr.read_heads(cfg(tmp_path))
+    assert "truncated" in capsys.readouterr().err
+    assert mr.records(cfg(tmp_path), heads, NOW) == []  # no failure on the first page: not red
 
 
 def test_main_fixture_round_trip(tmp_path, capsys):
