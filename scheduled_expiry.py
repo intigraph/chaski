@@ -320,8 +320,11 @@ def main(argv=None):
     if args.action in ("plan", "apply") and args.slots is None:
         ap.error("plan and apply require the emitter's --slots ledger")
     if args.action == "apply":
-        if not (args.cursor and args.cursor.is_file() and args.plan and args.expected_plan_sha256):
-            ap.error("apply requires cursor custody, the reviewed plan and its exact hash")
+        # The consumer's --state cursor path. A stream-mode consumer keeps its
+        # cursor in the inbox, so the file may not exist: ConsumerLease then
+        # locks its stable sidecar and the inbox inode, as the consumer does.
+        if not (args.cursor and args.cursor.parent.is_dir() and args.plan and args.expected_plan_sha256):
+            ap.error("apply requires the consumer's cursor path, the reviewed plan and its exact hash")
         if args.plan.stat().st_size > 8 * 1024 * 1024:
             ap.error("plan exceeds 8MiB bound")
         plan = json.loads(args.plan.read_text())

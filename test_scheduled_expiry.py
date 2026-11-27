@@ -269,3 +269,32 @@ def test_disposed_metric_counts_scheduled_expiry(world):
         "SELECT COUNT(*) FROM outbox o WHERE o.emitter=? AND o.delivered_at IS NULL AND "
         + em.undisposed("o"), (LABEL,)).fetchone()[0]
     assert count == 1
+
+
+def test_cli_apply_takes_custody_for_a_stream_mode_consumer_without_a_cursor_file(world):
+    """The Mac pilot keeps its cursor in the inbox: only the lease sidecar exists."""
+    from consumer_lease import ConsumerLease, ConsumerLeaseError
+    w = world
+    w["conn"].close()
+    w["slots"].close()
+    out = w["tmp"] / "plan.json"
+    args = ["--db", str(w["db"]), "--slots", str(w["slots_path"])]
+    assert sx.main(["plan", *args, "--plan", str(out), "--emitter", LABEL, "--created-before", str(CUTOFF),
+                    "--expect-never-claimed", "2", "--expect-claimed-unknown", "2",
+                    "--reason", "stale", "--ruling-ref", "aegis-se8"]) == 0
+    digest = sx.check_plan(json.loads(out.read_text()))
+    cursor = w["tmp"] / "event-cursor.json"
+    assert not cursor.exists()
+    apply_args = ["apply", *args, "--cursor", str(cursor), "--plan", str(out), "--expected-plan-sha256", digest]
+    # A running consumer holds the same custody: apply refuses with no receipt.
+    with ConsumerLease(cursor, w["db"]):
+        with pytest.raises(ConsumerLeaseError):
+            sx.main(apply_args)
+    w["conn"] = em.connect(w["db"])
+    assert w["conn"].execute("SELECT COUNT(*) FROM scheduled_dispositions").fetchone()[0] == 0
+    w["conn"].close()
+    assert sx.main(apply_args) == 0
+    assert not cursor.exists()
+    w["conn"] = em.connect(w["db"])
+    w["slots"] = sx._open_slots_rw(w["slots_path"])
+    assert sx.verify(w["conn"], w["slots"]) == {"verified_dispositions": 4, "verified_slot_retirements": 2}
