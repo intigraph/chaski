@@ -206,3 +206,30 @@ def test_cli_failure_is_nonzero_so_the_run_is_unknown(tmp_path):
     c = tmp_path / "c.yaml"
     c.write_text(f"repos: [intigraph/quipu]\ngh: [{sys.executable}, -c, 'import sys; sys.exit(1)']\n")
     assert pl.main(["--config", str(c)]) == 1
+
+
+def test_version_exits_without_config(capsys):
+    with pytest.raises(SystemExit) as exc:
+        pl.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr()
+    assert out.out.startswith("chaski-pr-lifecycle ") and out.err == ""
+
+
+def test_list_open_reports_truncation(monkeypatch, capsys):
+    data = {"r0": {"pullRequests": {"pageInfo": {"hasNextPage": True}, "nodes": [
+        {"number": 1, "isDraft": False, "headRefOid": H1, "headRefName": "x", "title": "t", "body": "",
+         "author": {"login": "scbrown", "__typename": "User"}}]}}}
+    monkeypatch.setattr(pl, "_graphql", lambda cfg, q: data)
+    assert [p["number"] for p in pl.list_open(CFG)] == [1]
+    assert "intigraph/quipu: more than 30 open PRs" in capsys.readouterr().err
+
+
+def test_add_details_reports_stalled_pr(monkeypatch, capsys):
+    node = {"commits": {"nodes": [{"commit": {"oid": H1, "statusCheckRollup": None}}]},
+            "reviews": {"pageInfo": {"hasPreviousPage": True}, "nodes": []},
+            "comments": {"pageInfo": {"hasPreviousPage": False}, "nodes": []}}
+    monkeypatch.setattr(pl, "_graphql", lambda cfg, q: {"p0": {"pullRequest": node}})
+    out = pl.add_details(CFG, [pr()])
+    assert out[0]["reviews_complete"] is False and jobs(out[0]) == []
+    assert "intigraph/quipu#1354: more than 100 reviews or comments" in capsys.readouterr().err

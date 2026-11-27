@@ -43,6 +43,8 @@ from pathlib import Path
 
 import yaml
 
+from chaski_version import add_version_argument
+
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 VERDICT_LINE = re.compile(r"\s*(APPROVE|REQUEST[ _-]CHANGES)\s+at\s+head\s+([0-9a-f]{40})\b", re.I)
@@ -234,7 +236,7 @@ def list_open(cfg: Config) -> list[dict]:
         parts.append(f"r{i}: repository(owner: {owner}, name: {name}) {{ pullRequests(states: OPEN, "
                      f"first: {cfg.max_prs_per_repo}, orderBy: {{field: UPDATED_AT, direction: DESC}}) "
                      "{ nodes { number isDraft headRefOid headRefName title body "
-                     "author { login __typename } } } }")
+                     "author { login __typename } } pageInfo { hasNextPage } } }")
     data = _graphql(cfg, "query { " + " ".join(parts) + " }")
     prs = []
     for i, repo in enumerate(cfg.repos):
@@ -242,6 +244,9 @@ def list_open(cfg: Config) -> list[dict]:
         if not isinstance(node, dict):
             print(f"pr-lifecycle: {repo}: unreadable, skipped (unknown)", file=sys.stderr)
             continue
+        if node["pullRequests"].get("pageInfo", {}).get("hasNextPage"):
+            print(f"pr-lifecycle: {repo}: more than {cfg.max_prs_per_repo} open PRs; least recently "
+                  "updated ones not read this run (truncated)", file=sys.stderr)
         for p in node["pullRequests"]["nodes"]:
             author = p.get("author") or {}
             prs.append({"repo": repo, "number": p["number"], "draft": bool(p["isDraft"]),
@@ -311,6 +316,9 @@ def add_details(cfg: Config, prs: list[dict]) -> list[dict]:
                 ctx = rollup["contexts"]
                 checks = latest_per_name([_context(c) for c in ctx["nodes"]])
                 complete = not ctx["pageInfo"]["hasNextPage"]
+            if node["reviews"]["pageInfo"]["hasPreviousPage"] or node["comments"]["pageInfo"]["hasPreviousPage"]:
+                print(f"pr-lifecycle: {p['repo']}#{p['number']}: more than 100 reviews or comments; "
+                      "verdicts unknown, no event (stalled)", file=sys.stderr)
             out.append({**p, "head": commit.get("oid"), "checks": checks, "checks_complete": complete,
                         "reviews": [{"state": r["state"], "at": r.get("submittedAt"),
                                      "author": (r.get("author") or {}).get("login"),
@@ -325,6 +333,7 @@ def add_details(cfg: Config, prs: list[dict]) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="chaski-pr-lifecycle", description=__doc__.splitlines()[0])
+    add_version_argument(ap, "chaski-pr-lifecycle")
     ap.add_argument("--config", required=True)
     ap.add_argument("--fixture", help="JSON list of normalized PRs; no network")
     args = ap.parse_args(argv)
