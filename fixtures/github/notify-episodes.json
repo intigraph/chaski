@@ -1,0 +1,574 @@
+{
+ "episodes": [
+  {
+   "action": "created",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.D_kwDOSynth1",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.b3fc72d33a46cc027094faed727df4e9",
+      "target": "github.D_kwDOSynth1"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.b3fc72d33a46cc027094faed727df4e9",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub discussion.created in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:b3fc72d33a46cc027094faed727df4e9",
+    "nodes": [
+     {
+      "description": "discussion.created on intigraph/quipu#1211",
+      "name": "github.activity.b3fc72d33a46cc027094faed727df4e9",
+      "properties": {
+       "githubActorLogin": "outside-person",
+       "githubEventKind": "discussion.created",
+       "occurredAt": "2026-11-21T22:00:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu#1211",
+      "name": "github.D_kwDOSynth1",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubCreatedAt": "2026-11-21T22:00:00Z",
+       "githubDatabaseId": 5001,
+       "githubNodeId": "D_kwDOSynth1",
+       "githubNumber": 1211,
+       "githubUrl": "https://github.com/intigraph/quipu/discussions/1211"
+      },
+      "type": "GitHubDiscussion"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:discussion.created:b3fc72d33a46cc027094faed727df4e9"
+   },
+   "event": "discussion"
+  },
+  {
+   "action": "created",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOSynth1",
+      "target": "github.D_kwDOSynth1"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOSynth1",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.D_kwDOSynth1",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.2ce7013e7564fc319ee5c1a7e06030fb",
+      "target": "github.IC_kwDOSynth1"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.2ce7013e7564fc319ee5c1a7e06030fb",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub discussion_comment.created in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:2ce7013e7564fc319ee5c1a7e06030fb",
+    "nodes": [
+     {
+      "description": "discussion_comment.created on intigraph/quipu comment IC_kwDOSynth1",
+      "name": "github.activity.2ce7013e7564fc319ee5c1a7e06030fb",
+      "properties": {
+       "githubActorLogin": "outside-person",
+       "githubEventKind": "discussion_comment.created",
+       "occurredAt": "2026-11-21T22:05:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu comment IC_kwDOSynth1",
+      "name": "github.IC_kwDOSynth1",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubDatabaseId": 6001,
+       "githubNodeId": "IC_kwDOSynth1",
+       "githubUrl": "https://github.com/intigraph/quipu/discussions/1211#issuecomment-6001"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/quipu#1211",
+      "name": "github.D_kwDOSynth1",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubCreatedAt": "2026-11-21T22:00:00Z",
+       "githubDatabaseId": 5001,
+       "githubNodeId": "D_kwDOSynth1",
+       "githubNumber": 1211,
+       "githubUrl": "https://github.com/intigraph/quipu/discussions/1211"
+      },
+      "type": "GitHubDiscussion"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:discussion_comment.created:2ce7013e7564fc319ee5c1a7e06030fb"
+   },
+   "event": "discussion_comment"
+  },
+  {
+   "action": "created",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOSynth2",
+      "target": "github.D_kwDOSynth1"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOSynth2",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.D_kwDOSynth1",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.569d9d78de1fc8f613891ccc87cbaa76",
+      "target": "github.IC_kwDOSynth2"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.569d9d78de1fc8f613891ccc87cbaa76",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub discussion_comment.created in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:569d9d78de1fc8f613891ccc87cbaa76",
+    "nodes": [
+     {
+      "description": "discussion_comment.created on intigraph/quipu comment IC_kwDOSynth2",
+      "name": "github.activity.569d9d78de1fc8f613891ccc87cbaa76",
+      "properties": {
+       "githubActorLogin": "scbrown",
+       "githubEventKind": "discussion_comment.created",
+       "occurredAt": "2026-11-21T22:06:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu comment IC_kwDOSynth2",
+      "name": "github.IC_kwDOSynth2",
+      "properties": {
+       "githubAuthorLogin": "scbrown",
+       "githubDatabaseId": 6002,
+       "githubNodeId": "IC_kwDOSynth2",
+       "githubUrl": "https://github.com/intigraph/quipu/discussions/1211#issuecomment-6002"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/quipu#1211",
+      "name": "github.D_kwDOSynth1",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubCreatedAt": "2026-11-21T22:00:00Z",
+       "githubDatabaseId": 5001,
+       "githubNodeId": "D_kwDOSynth1",
+       "githubNumber": 1211,
+       "githubUrl": "https://github.com/intigraph/quipu/discussions/1211"
+      },
+      "type": "GitHubDiscussion"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:discussion_comment.created:569d9d78de1fc8f613891ccc87cbaa76"
+   },
+   "event": "discussion_comment"
+  },
+  {
+   "action": "created",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOSynth3",
+      "target": "github.I_kwDOSynth2"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOSynth3",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.I_kwDOSynth2",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.110d12f7257b14a228a6e257f2e42a7d",
+      "target": "github.IC_kwDOSynth3"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.110d12f7257b14a228a6e257f2e42a7d",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub issue_comment.created in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:110d12f7257b14a228a6e257f2e42a7d",
+    "nodes": [
+     {
+      "description": "issue_comment.created on intigraph/quipu comment IC_kwDOSynth3",
+      "name": "github.activity.110d12f7257b14a228a6e257f2e42a7d",
+      "properties": {
+       "githubActorLogin": "outside-person",
+       "githubEventKind": "issue_comment.created",
+       "occurredAt": "2026-11-21T22:07:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu comment IC_kwDOSynth3",
+      "name": "github.IC_kwDOSynth3",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubDatabaseId": 6003,
+       "githubNodeId": "IC_kwDOSynth3",
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242#issuecomment-6003"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/quipu#1242",
+      "name": "github.I_kwDOSynth2",
+      "properties": {
+       "githubAuthorLogin": "github-actions[bot]",
+       "githubCreatedAt": "2026-11-21T21:00:00Z",
+       "githubDatabaseId": 5002,
+       "githubNodeId": "I_kwDOSynth2",
+       "githubNumber": 1242,
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242"
+      },
+      "type": "GitHubIssue"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:issue_comment.created:110d12f7257b14a228a6e257f2e42a7d"
+   },
+   "event": "issue_comment"
+  },
+  {
+   "action": "created",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOSynth4",
+      "target": "github.I_kwDOSynth2"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOSynth4",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.I_kwDOSynth2",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.c1bb100f30bca645fb183663d76abaa7",
+      "target": "github.IC_kwDOSynth4"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.c1bb100f30bca645fb183663d76abaa7",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub issue_comment.created in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:c1bb100f30bca645fb183663d76abaa7",
+    "nodes": [
+     {
+      "description": "issue_comment.created on intigraph/quipu comment IC_kwDOSynth4",
+      "name": "github.activity.c1bb100f30bca645fb183663d76abaa7",
+      "properties": {
+       "githubActorLogin": "github-actions[bot]",
+       "githubEventKind": "issue_comment.created",
+       "occurredAt": "2026-11-21T22:08:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu comment IC_kwDOSynth4",
+      "name": "github.IC_kwDOSynth4",
+      "properties": {
+       "githubAuthorLogin": "github-actions[bot]",
+       "githubDatabaseId": 6004,
+       "githubNodeId": "IC_kwDOSynth4",
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242#issuecomment-6004"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/quipu#1242",
+      "name": "github.I_kwDOSynth2",
+      "properties": {
+       "githubAuthorLogin": "github-actions[bot]",
+       "githubCreatedAt": "2026-11-21T21:00:00Z",
+       "githubDatabaseId": 5002,
+       "githubNodeId": "I_kwDOSynth2",
+       "githubNumber": 1242,
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242"
+      },
+      "type": "GitHubIssue"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:issue_comment.created:c1bb100f30bca645fb183663d76abaa7"
+   },
+   "event": "issue_comment"
+  },
+  {
+   "action": "edited",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "onGitHubThread",
+      "source": "github.IC_kwDOSynth5",
+      "target": "github.I_kwDOSynth2"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.IC_kwDOSynth5",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.I_kwDOSynth2",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.9519ca8bd8619e526f26671bf4c9fd50",
+      "target": "github.IC_kwDOSynth5"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.9519ca8bd8619e526f26671bf4c9fd50",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub issue_comment.edited in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:9519ca8bd8619e526f26671bf4c9fd50",
+    "nodes": [
+     {
+      "description": "issue_comment.edited on intigraph/quipu comment IC_kwDOSynth5",
+      "name": "github.activity.9519ca8bd8619e526f26671bf4c9fd50",
+      "properties": {
+       "githubActorLogin": "outside-person",
+       "githubEventKind": "issue_comment.edited",
+       "occurredAt": "2026-11-21T22:09:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu comment IC_kwDOSynth5",
+      "name": "github.IC_kwDOSynth5",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubDatabaseId": 6005,
+       "githubNodeId": "IC_kwDOSynth5",
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242#issuecomment-6005"
+      },
+      "type": "GitHubComment"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     },
+     {
+      "description": "intigraph/quipu#1242",
+      "name": "github.I_kwDOSynth2",
+      "properties": {
+       "githubAuthorLogin": "github-actions[bot]",
+       "githubCreatedAt": "2026-11-21T21:00:00Z",
+       "githubDatabaseId": 5002,
+       "githubNodeId": "I_kwDOSynth2",
+       "githubNumber": 1242,
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1242"
+      },
+      "type": "GitHubIssue"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:issue_comment.edited:9519ca8bd8619e526f26671bf4c9fd50"
+   },
+   "event": "issue_comment"
+  },
+  {
+   "action": "opened",
+   "episode": {
+    "actor": "camayoc-fixture",
+    "edges": [
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.I_kwDOSynth9",
+      "target": "github.R_kgDOQuipu0"
+     },
+     {
+      "relation": "aboutGitHubEntity",
+      "source": "github.activity.bfbca2f9b1bc3e2359d6945e3ac2c007",
+      "target": "github.I_kwDOSynth9"
+     },
+     {
+      "relation": "inGitHubRepository",
+      "source": "github.activity.bfbca2f9b1bc3e2359d6945e3ac2c007",
+      "target": "github.R_kgDOQuipu0"
+     }
+    ],
+    "episode_body": "GitHub issues.opened in intigraph/quipu",
+    "graph": "https://camayoc.local/operational/github",
+    "group_id": "github",
+    "name": "github:bfbca2f9b1bc3e2359d6945e3ac2c007",
+    "nodes": [
+     {
+      "description": "issues.opened on intigraph/quipu#1250",
+      "name": "github.activity.bfbca2f9b1bc3e2359d6945e3ac2c007",
+      "properties": {
+       "githubActorLogin": "outside-person",
+       "githubEventKind": "issues.opened",
+       "githubState": "open",
+       "occurredAt": "2026-11-21T22:10:00Z",
+       "sourceKind": "observed"
+      },
+      "type": "GitHubActivity"
+     },
+     {
+      "description": "intigraph/quipu#1250",
+      "name": "github.I_kwDOSynth9",
+      "properties": {
+       "githubAuthorLogin": "outside-person",
+       "githubCreatedAt": "2026-11-21T22:10:00Z",
+       "githubDatabaseId": 5002,
+       "githubNodeId": "I_kwDOSynth9",
+       "githubNumber": 1250,
+       "githubUrl": "https://github.com/intigraph/quipu/issues/1250"
+      },
+      "type": "GitHubIssue"
+     },
+     {
+      "description": "intigraph/quipu",
+      "name": "github.R_kgDOQuipu0",
+      "properties": {
+       "githubDatabaseId": 1001,
+       "githubFullName": "intigraph/quipu",
+       "githubNodeId": "R_kgDOQuipu0",
+       "githubUrl": "https://github.com/intigraph/quipu"
+      },
+      "type": "GitHubRepository"
+     }
+    ],
+    "source": "github:mapping=e089608d1562a052:issues.opened:bfbca2f9b1bc3e2359d6945e3ac2c007"
+   },
+   "event": "issues"
+  }
+ ],
+ "generated_by": "camayoc scripts/github_ingress.py episode_for @ a1b29489f9bf",
+ "note": "githubActivityKey (a 64-hex digest) removed after mapping; the activity node name still carries its first 32 hex"
+}
