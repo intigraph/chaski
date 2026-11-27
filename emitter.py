@@ -102,6 +102,24 @@ CREATE TRIGGER IF NOT EXISTS recovery_dispositions_no_update
 CREATE TRIGGER IF NOT EXISTS recovery_dispositions_no_delete
  BEFORE DELETE ON recovery_dispositions BEGIN
  SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
+CREATE TABLE IF NOT EXISTS scheduled_dispositions (
+    event_id TEXT NOT NULL PRIMARY KEY,
+    identity_sha256 TEXT NOT NULL,
+    plan_sha256 TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition='expired-not-delivered'),
+    class TEXT NOT NULL CHECK(class IN ('never-claimed','claimed-unknown')),
+    slot TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    ruling_ref TEXT NOT NULL,
+    source_utc TEXT NOT NULL,
+    recorded_at REAL NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS scheduled_dispositions_no_update
+ BEFORE UPDATE ON scheduled_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS scheduled_dispositions_no_delete
+ BEFORE DELETE ON scheduled_dispositions BEGIN
+ SELECT RAISE(ABORT,'disposition ledger is append-only'); END;
 CREATE TABLE IF NOT EXISTS renewal_receipts (
     event_id TEXT PRIMARY KEY,
     last_received REAL,
@@ -221,6 +239,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     try:
         verify_dispositions(conn)
         verify_recovery_dispositions(conn)
+        verify_scheduled_dispositions(conn)
     except BaseException:
         conn.close()
         raise
@@ -542,8 +561,9 @@ def sink_setup_allowed(conn, sink, now, emitter, resolve_recovery):
         scope = scope_fn() if scope_fn is not None else None
         allowed = first[0] is None or json.loads(first[0]) == scope
     if first is None and conn.execute(
-            "SELECT 1 FROM outbox_dispositions d JOIN outbox o ON o.event_id=d.event_id"
-            " WHERE o.emitter=? LIMIT 1", (emitter,)).fetchone():
+            "SELECT 1 FROM outbox o WHERE o.emitter=? AND (EXISTS (SELECT 1 FROM outbox_dispositions d"
+            " WHERE d.event_id=o.event_id) OR EXISTS (SELECT 1 FROM scheduled_dispositions s"
+            " WHERE s.event_id=o.event_id)) LIMIT 1", (emitter,)).fetchone():
         # Disposed work must not cause a receiver setup/budget write either.
         allowed = allowed and bool(conn.execute(
             "SELECT 1 FROM outbox WHERE emitter=? AND delivered_at IS NULL AND "
@@ -867,6 +887,9 @@ class Runner:
         disposed += self.conn.execute(
             "SELECT COUNT(*) FROM recovery_dispositions d JOIN recovery_outbox r ON r.event_id=d.event_id"
             " WHERE r.emitter=?", (self.emitter.label,)).fetchone()[0]
+        disposed += self.conn.execute(
+            "SELECT COUNT(*) FROM scheduled_dispositions d JOIN outbox o ON o.event_id=d.event_id"
+            " WHERE o.emitter=?", (self.emitter.label,)).fetchone()[0]
         return {"disposed": disposed, "renewal_receipts": renewal_pending, "renewal_failures": renewal_failures,
                 "runs": dict(self.runs), "last_success": self.last_success,
                 "queued_total": self.queued_total, "pending": pending,
@@ -914,8 +937,12 @@ def undisposed(alias):
                 "disposition.event_id=recovery_outbox.event_id)")
     if alias not in ('outbox', 'o'):
         raise ValueError('invalid outbox alias')
+    # aegis-se8: a reviewed scheduled expiry (scheduled_expiry.py) fences an
+    # attempted/bound scheduled firing by the same immutable identity.
     return ("NOT EXISTS (SELECT 1 FROM outbox_dispositions disposition WHERE "
-            f"disposition.source_table='outbox' AND disposition.event_id={alias}.event_id)")
+            f"disposition.source_table='outbox' AND disposition.event_id={alias}.event_id)"
+            " AND NOT EXISTS (SELECT 1 FROM scheduled_dispositions scheduled WHERE "
+            f"scheduled.event_id={alias}.event_id)")
 
 
 def disposition_digest(value):
@@ -967,6 +994,26 @@ def verify_recovery_dispositions(conn):
         row = None if row is None else dict(zip((d[0] for d in cur.description), row))
         if row is None or row["delivered_at"] is not None or recovery_identity(row) != expected:
             raise ValueError("disposed recovery changed or disappeared; consumer remains fenced")
+    return len(rows)
+
+
+SCHEDULED_IDENTITY_FIELDS = ("event_id", "emitter", "item", "generation", "payload", "created",
+                             "delivery_scope")
+
+
+def scheduled_identity(row):
+    """Immutable fields of a bound scheduled firing; retry counters may move."""
+    return disposition_digest({k: row[k] for k in SCHEDULED_IDENTITY_FIELDS})
+
+
+def verify_scheduled_dispositions(conn):
+    """An expired scheduled firing stays retained, undelivered and unchanged (aegis-se8)."""
+    rows = conn.execute("SELECT event_id,identity_sha256 FROM scheduled_dispositions").fetchall()
+    for event_id, expected in rows:
+        row = disposition_row(conn, event_id)
+        if (row is None or row["delivered_at"] is not None or row["delivery_scope"] is None
+                or scheduled_identity(row) != expected):
+            raise ValueError("disposed scheduled firing changed or disappeared; consumer remains fenced")
     return len(rows)
 
 
