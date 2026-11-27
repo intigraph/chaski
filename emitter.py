@@ -56,6 +56,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from adapter_stderr import adapter_failure
+
 LOG = logging.getLogger("chaski.emitter")
 
 BLOCKED, UNBLOCKED, UNKNOWN = "BLOCKED", "UNBLOCKED", "UNKNOWN"
@@ -257,7 +259,7 @@ def run_adapter(emitter: Emitter) -> list[dict]:
     proc = subprocess.run(emitter.command, capture_output=True, text=True,
                           timeout=emitter.timeout_s, check=False)
     if proc.returncode != 0:
-        raise RuntimeError(f"adapter exited {proc.returncode}: {proc.stderr.strip()[:300]}")
+        raise adapter_failure(proc.returncode, proc.stderr)
     return decode_adapter_output(proc.stdout)
 
 

@@ -14,6 +14,7 @@ import math
 import subprocess
 import urllib.parse
 
+from adapter_stderr import adapter_failure
 from change_stream import StagedRecords
 from emitter import DELIVER_PER_TICK, ProtocolError, Runner, deliver_pending, observe, queue_recoveries
 
@@ -101,7 +102,7 @@ def call(emitter, request=None):
     proc = subprocess.run([*emitter.command, flag], input=json.dumps(request) if request is not None else None,
                           capture_output=True, text=True, timeout=emitter.timeout_s, check=False)
     if proc.returncode:
-        raise RuntimeError(f"adapter exited {proc.returncode}: {proc.stderr[:300]}")
+        raise adapter_failure(proc.returncode, proc.stderr)
     out = json.loads(proc.stdout)
     if not isinstance(out, dict) or out.get("version") != 1:
         raise ProtocolError("expected incremental adapter protocol version 1")
