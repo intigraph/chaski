@@ -14,7 +14,7 @@ from scheduled_receiver import run_id
 
 
 class ScheduledEventSink:
-    def __init__(self, receiver, emitter: str, recipient: str):
+    def __init__(self, receiver, emitter: str, recipient: str, delivery_ttl_s: int | None = None):
         if (type(emitter) is not str or
                 not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]{0,127}', emitter) or
                 type(recipient) is not str or not 0 < len(recipient) <= 256):
@@ -22,6 +22,10 @@ class ScheduledEventSink:
         receiver.scope.validate()
         self.receiver, self.scope = receiver, receiver.scope
         self.emitter, self.recipient = emitter, recipient
+        if delivery_ttl_s is not None and (type(delivery_ttl_s) is not int or delivery_ttl_s <= 0):
+            raise ValueError('positive integer delivery TTL required')
+        # Read by emitter.deliver_pending; not part of the bound receiver scope.
+        self.delivery_ttl_s = delivery_ttl_s
 
     def delivery_scope(self):
         return {'receiver': 'scheduled-event-v1', 'emitter': self.emitter,
