@@ -200,10 +200,14 @@ EXAMPLE = Path(__file__).parent / "pr-lifecycle.example.yaml"
 def test_rules_file_accepts_the_projecting_jsonl_sink(tmp_path):
     rules = tmp_path / "rules.yaml"
     rules.write_text(EXAMPLE.read_text().split("# --- emitter ---\n", 1)[1])
-    [(e, sink)] = chaski.load_emitters(rules)
+    [(e, sink), (red, red_sink)] = chaski.load_emitters(rules)
     assert (e.label, e.interval_s, e.baseline_emits) == ("pr-lifecycle", 120, True)
     made = chaski.make_sink(e, sink, "http://unused")
     assert isinstance(made, em.JsonlSink) and made.project == "action"
+    # main red -> triage (aegis-dja): its own file, no baseline backlog.
+    assert (red.label, red.interval_s, red.baseline_emits) == ("main-red", 120, False)
+    made = chaski.make_sink(red, red_sink, "http://unused")
+    assert isinstance(made, em.JsonlSink) and made.project == "action" and str(made.path).endswith("main-red.jsonl")
     rules.write_text("emitters:\n- {label: x, schedule: PT2M, owner: o, command: [true],"
                      " sink: {jsonl: {path: /x, extra: 1}}}\n")
     with pytest.raises(chaski.RuleError):

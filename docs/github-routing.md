@@ -208,8 +208,11 @@ were checked on.
 Exit codes 1 and 2 leave the request `refused`, release any lane turn and
 exit 75, so chaski retries. `install` and `announce` run as `task` jobs.
 
-Until #406 merges, `spawner: {kind: stub}` records the exact argv in a JSONL
-file and starts nothing. `spawner: {kind: st}` is the real call.
+`spawner: {kind: st}` is the only spawner: the stub that recorded argv and
+started nothing was removed (aegis-dja). New GitHub-event recruitment goes
+through the chaski emitter -> `st agent spawn --drain-events` path instead:
+open PRs in [pr-lifecycle.md](pr-lifecycle.md), a red default branch in
+[main-red.md](main-red.md).
 
 A `dispatched` request's ledger `detail` starts with
 `event_to_spawn_s=<n> trigger=<iso>`: seconds from the natural GitHub event
@@ -259,7 +262,7 @@ Not done here; each step is a separate, reviewed change.
 2. The signed verdict writer and verifier registration for the review job, the
    `authoredByAgent` writer, and shantytown #406 merged with the follow-ups above.
 3. Copy `github-routing.example.yaml`. Set `members`, `repos`, `ledger`,
-   `work_items` and the `spawner` (`stub` first).
+   `work_items` and the `spawner` (`st`).
 4. Add the emitter to chaski's emitters file:
 
    ```yaml
@@ -290,10 +293,10 @@ Not done here; each step is a separate, reviewed change.
    A command sink is only accepted beside a graph sink, which records each
    firing in Quipu. The receiver must run where `st` and `sd` are configured
    for the administrator.
-5. Dry run first: `spawner: {kind: stub}` plus `work_items: {kind: jsonl}`.
-   Then compare the recorded requests with what hammond would have spawned
-   by hand. After that, switch `work_items` to `seeds`, then `spawner` to
-   `st`.
+5. Dry run first: `work_items: {kind: jsonl}` with `spawner: {kind: st,
+   argv_prefix: [<a recording script>]}`. Then compare the recorded requests
+   with what hammond would have spawned by hand. After that, switch
+   `work_items` to `seeds` and drop the `argv_prefix` override.
 6. Retire `quipu-merge.sh` once the quipu lane has merged on its own.
 
 Offline check against the recorded facts:

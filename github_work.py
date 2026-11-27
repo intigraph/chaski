@@ -477,25 +477,6 @@ class StSpawner:
         return False, f"st exited {p.returncode}: {out}"
 
 
-class StubSpawner:
-    """Records the exact `st agent spawn` call instead of making it. The
-    default until shantytown #406 is merged and the pipeline is enabled."""
-
-    def __init__(self, conf: dict, administrator: str):
-        self.path = Path(conf["path"]).expanduser()
-        self.prefix = list(conf.get("argv_prefix") or ["st"])
-
-    def spawn(self, req: dict, work_item: str) -> tuple[bool, str]:
-        seen = set()
-        if self.path.exists():
-            seen = {json.loads(x)["request_id"] for x in self.path.read_text().splitlines() if x}
-        if req["request_id"] not in seen:
-            with self.path.open("a") as f:
-                f.write(json.dumps({"request_id": req["request_id"], "argv": spawn_argv(self.prefix, req, work_item)},
-                                   sort_keys=True) + "\n")
-        return True, "stub: recorded, not spawned"
-
-
 class AssetChecker:
     """Reads the GitHub release object once, then runs the reviewed checker.
 
@@ -533,14 +514,13 @@ def make_ports(cfg: gr.Config):
     items_conf = cfg.raw.get("work_items") or {}
     spawn_conf = cfg.raw.get("spawner") or {}
     items = {"seeds": SeedsItems, "jsonl": JsonlItems}.get(items_conf.get("kind"))
-    spawner = {"st": StSpawner, "stub": StubSpawner}.get(spawn_conf.get("kind"))
+    spawner = {"st": StSpawner}.get(spawn_conf.get("kind"))
     if items is None:
         raise gr.ConfigError("work_items.kind must be seeds or jsonl")
     if spawner is None:
-        raise gr.ConfigError("spawner.kind must be st or stub")
-    for name, conf, cls in (("work_items", items_conf, items), ("spawner", spawn_conf, spawner)):
-        if cls in (JsonlItems, StubSpawner) and not conf.get("path"):
-            raise gr.ConfigError(f"{name}.path is required for kind {conf.get('kind')}")
+        raise gr.ConfigError("spawner.kind must be st (the stub spawner was removed, aegis-dja)")
+    if items is JsonlItems and not items_conf.get("path"):
+        raise gr.ConfigError("work_items.path is required for kind jsonl")
     return items(items_conf, cfg.administrator), spawner(spawn_conf, cfg.administrator)
 
 

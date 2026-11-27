@@ -46,8 +46,7 @@ work_items:
   labels: [chaski-github, automation]
   priority: 1
 
-# How jobs start. stub records the exact `st agent spawn` call and starts
-# nothing; switch to `kind: st` once shantytown #406 is merged.
+# How jobs start: the real `st agent spawn --ephemeral` call (the stub
+# spawner was removed, aegis-dja).
 spawner:
-  kind: stub
-  path: ~/.local/state/chaski/github-spawn-requests.jsonl
+  kind: st

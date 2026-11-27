@@ -19,6 +19,7 @@ import pytest
 import github_routes as gr
 import github_work as gw
 from test_github_routes import REPO, ep, ts, variant
+from test_github_work import recording_st
 
 TAG = "v0.1.3"
 RELEASE = "github.RE_kwDOTvaTnM4Y-A2D"
@@ -171,7 +172,7 @@ class FakeChecker:
 def env(tmp_path):
     d = {**doc(), "ledger": str(tmp_path / "work.db"),
          "work_items": {"kind": "jsonl", "path": str(tmp_path / "items.jsonl")},
-         "spawner": {"kind": "stub", "path": str(tmp_path / "spawns.jsonl")}}
+         "spawner": {"kind": "st", "argv_prefix": [str(recording_st(tmp_path))]}}
     cfg = gr.parse_config(d)
     ledger = gw.Ledger(cfg.ledger)
     items, spawner = gw.make_ports(cfg)
