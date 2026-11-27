@@ -28,8 +28,9 @@ title, then the branch, then the body.
 
 ## Rules, per open PR and its current head
 
-Drafts, bot authors (`[bot]` or a GitHub Bot), `skip_authors` and
-`release-please--` branches are skipped. In order, the first that applies:
+Drafts, bot authors (`[bot]` or a GitHub Bot), `skip_authors`,
+`release-please--` branches and PRs by untrusted authors (see **Trust**) are
+skipped. In order, the first that applies:
 
 | state of the current head | job | reason |
 |---|---|---|
@@ -43,12 +44,29 @@ race on the same head; the fix's push re-arms the review. Approved with
 pending checks waits; the run after the last required check goes green
 emits the merge (within the 2 minute schedule).
 
+**Trust.** These jobs run with no crew in the loop, so only trusted GitHub
+input recruits one. A login is trusted when its `authorAssociation` on the
+repo is in `trusted_associations` (default `OWNER`, `MEMBER`,
+`COLLABORATOR`) or it is listed in `trusted_logins` or `verdict_logins`. A
+missing association is untrusted. A PR by an untrusted author gets no job (no
+auto review of a diff an outsider controls), and a review by an untrusted
+login is not a verdict: a drive-by CHANGES_REQUESTED does not recruit a fix
+task that would act on the reviewer's text, and a drive-by APPROVE does not
+replace the independent review.
+
 **Verdicts.** A GitHub review (APPROVED / CHANGES_REQUESTED) on the head
-commit by a login other than the PR author, or a comment by a
+commit by a trusted login other than the PR author, or a comment by a
 `verdict_logins` login whose first line is `APPROVE at head <40-hex>` or
 `REQUEST CHANGES at head <40-hex>`, which is how crew review jobs record their
 verdicts under the shared operator login. A verdict for an older head does
-not count. The merge job re-verifies head, checks and independence itself.
+not count.
+
+**Independence rests on the merge job.** Crew share one operator login, so
+the PR author and a `verdict_logins` reviewer are the same GitHub login. This
+adapter cannot tell an author agent's own `APPROVE at head` comment from an
+independent reviewer's; either emits a `merge`. The merge job (`st agent
+spawn --merge`) re-verifies head, checks and that the verdict came from a
+different session than the author. Half B must not skip that check.
 
 **Checks.** The newest run of each check name counts (a superseded CANCELLED
 or FAILURE run does not linger). Required = contexts GitHub marks required
@@ -63,7 +81,14 @@ red. CANCELLED and STALE are neither red nor green.
   (`INSERT OR IGNORE`), the projecting JSONL sink (skips an id already in the
   file) and half B's ledger each deduplicate on it.
 - `baseline_emits: true`: a needed action already true at first sight is an
-  event (chaski did not watch it become needed, but it is still needed).
+  event (chaski did not watch it become needed, but it is still needed). The
+  first run after enabling therefore emits a `review` for every unreviewed
+  open PR across all configured repos at once. Half B's existing eph cap and
+  governor bound how many run (refused events stay queued); the deploy step
+  should still enable a few repos first, or accept the backlog draining at
+  the cap.
+- Events fire once per `(repo, pr, head, job)`, so a crashed job is not
+  re-emitted for that head. Half B's ledger owns retries.
 - A failed run exits non-zero, which leaves every item unchanged. A repo or
   PR the API could not read, a head that moved between the two reads,
   truncated reviews/comments (over 100) or checks, or a head with no checks

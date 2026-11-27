@@ -14,6 +14,12 @@ repos:
 # Logins whose "APPROVE at head <sha>" / "REQUEST CHANGES at head <sha>"
 # comments are crew review verdicts (crew share the operator login).
 verdict_logins: [scbrown]
+# Only these GitHub authorAssociation values (or trusted_logins /
+# verdict_logins) may recruit: PRs by other authors are not judged, and
+# reviews by other logins are not verdicts. A drive-by review on a public repo
+# recruits nothing.
+trusted_associations: [OWNER, MEMBER, COLLABORATOR]
+trusted_logins: []
 item_prefixes: [aegis]
 skip_authors: []
 skip_branch_prefixes: [release-please--]

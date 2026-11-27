@@ -20,7 +20,8 @@ CFG = pl.Config(repos=("intigraph/quipu",), verdict_logins=frozenset({"scbrown"}
 
 def pr(**kw):
     base = {"repo": "intigraph/quipu", "number": 1354, "draft": False, "author": "scbrown",
-            "author_is_bot": False, "head_ref": "design/aegis-m5s.3.2-identity", "head_ref_oid": H1,
+            "author_association": "OWNER", "author_is_bot": False,
+            "head_ref": "design/aegis-m5s.3.2-identity", "head_ref_oid": H1,
             "title": "docs(design): identity (aegis-m5s.3.2)", "body": "", "head": H1,
             "checks": [{"name": "Build", "state": "SUCCESS", "required": True},
                        {"name": "Lint", "state": "PENDING", "required": False}],
@@ -81,8 +82,32 @@ def test_latest_verdict_on_the_head_decides():
 def test_github_reviews_count_only_from_non_authors_on_the_head():
     own = pr(reviews=[{"author": "scbrown", "state": "APPROVED", "commit": H1, "at": "t"}])
     assert jobs(pr(**{k: own[k] for k in ("reviews",)}, comments=[])) == [("review", "new-head-unreviewed")]
-    other = pr(reviews=[{"author": "reviewer", "state": "APPROVED", "commit": H1, "at": "t"}])
+    other = pr(reviews=[{"author": "reviewer", "association": "MEMBER", "state": "APPROVED",
+                         "commit": H1, "at": "t"}])
     assert jobs(other) == [("merge", "green-and-approved")]
+
+
+def test_drive_by_reviews_recruit_nothing():
+    for assoc in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", None):
+        changes = pr(reviews=[{"author": "drive-by", "association": assoc, "state": "CHANGES_REQUESTED",
+                               "commit": H1, "at": "t"}])
+        assert jobs(changes) == [("review", "new-head-unreviewed")]  # no fix task on attacker text
+        approve = pr(reviews=[{"author": "drive-by", "association": assoc, "state": "APPROVED",
+                               "commit": H1, "at": "t"}])
+        assert jobs(approve) == [("review", "new-head-unreviewed")]  # independent review still runs
+    allowed = pl.Config(repos=CFG.repos, verdict_logins=CFG.verdict_logins, trusted_logins=frozenset({"drive-by"}))
+    changes = pr(reviews=[{"author": "drive-by", "association": "NONE", "state": "CHANGES_REQUESTED",
+                           "commit": H1, "at": "t"}])
+    assert jobs(changes, allowed) == [("task", "changes-requested")]
+
+
+def test_outside_author_prs_are_not_judged():
+    for assoc in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", None):
+        outside = pr(author="outsider", author_association=assoc)
+        assert jobs(outside) == []
+        assert jobs(pr(author="outsider", author_association=assoc,
+                       checks=[{"name": "Build", "state": "FAILURE", "required": True}])) == []
+    assert jobs(pr(author="teammate", author_association="COLLABORATOR")) == [("review", "new-head-unreviewed")]
 
 
 def test_verdict_comments_from_untrusted_logins_are_ignored():
@@ -169,9 +194,12 @@ def test_emitter_refuses_an_action_whose_id_differs():
         em._validate(e, [bad])
 
 
+EXAMPLE = Path(__file__).parent / "pr-lifecycle.example.yaml"
+
+
 def test_rules_file_accepts_the_projecting_jsonl_sink(tmp_path):
     rules = tmp_path / "rules.yaml"
-    rules.write_text(Path("pr-lifecycle.example.yaml").read_text().split("# --- emitter ---\n", 1)[1])
+    rules.write_text(EXAMPLE.read_text().split("# --- emitter ---\n", 1)[1])
     [(e, sink)] = chaski.load_emitters(rules)
     assert (e.label, e.interval_s, e.baseline_emits) == ("pr-lifecycle", 120, True)
     made = chaski.make_sink(e, sink, "http://unused")
@@ -184,10 +212,14 @@ def test_rules_file_accepts_the_projecting_jsonl_sink(tmp_path):
 
 def test_config_validation(tmp_path):
     c = tmp_path / "c.yaml"
-    c.write_text(Path("pr-lifecycle.example.yaml").read_text().split("# --- emitter ---\n", 1)[0])
+    c.write_text(EXAMPLE.read_text().split("# --- emitter ---\n", 1)[0])
     cfg = pl.load_config(c)
     assert "intigraph/quipu" in cfg.repos and "scbrown" in cfg.verdict_logins
+    assert cfg.trusted_associations == {"OWNER", "MEMBER", "COLLABORATOR"}
     c.write_text("repos: [not a repo]\n")
+    with pytest.raises(pl.ConfigError):
+        pl.load_config(c)
+    c.write_text("repos: [intigraph/quipu]\ntrusted_associations: [EVERYONE]\n")
     with pytest.raises(pl.ConfigError):
         pl.load_config(c)
 
@@ -219,10 +251,23 @@ def test_version_exits_without_config(capsys):
 def test_list_open_reports_truncation(monkeypatch, capsys):
     data = {"r0": {"pullRequests": {"pageInfo": {"hasNextPage": True}, "nodes": [
         {"number": 1, "isDraft": False, "headRefOid": H1, "headRefName": "x", "title": "t", "body": "",
-         "author": {"login": "scbrown", "__typename": "User"}}]}}}
+         "authorAssociation": "OWNER", "author": {"login": "scbrown", "__typename": "User"}}]}}}
     monkeypatch.setattr(pl, "_graphql", lambda cfg, q: data)
-    assert [p["number"] for p in pl.list_open(CFG)] == [1]
+    [p] = pl.list_open(CFG)
+    assert p["number"] == 1 and p["author_association"] == "OWNER"
     assert "intigraph/quipu: more than 30 open PRs" in capsys.readouterr().err
+
+
+def test_add_details_reads_review_association(monkeypatch):
+    node = {"commits": {"nodes": [{"commit": {"oid": H1, "statusCheckRollup": None}}]},
+            "reviews": {"pageInfo": {"hasPreviousPage": False}, "nodes": [
+                {"state": "CHANGES_REQUESTED", "submittedAt": "t", "authorAssociation": "NONE",
+                 "author": {"login": "drive-by"}, "commit": {"oid": H1}}]},
+            "comments": {"pageInfo": {"hasPreviousPage": False}, "nodes": []}}
+    monkeypatch.setattr(pl, "_graphql", lambda cfg, q: {"p0": {"pullRequest": node}})
+    [out] = pl.add_details(CFG, [pr()])
+    assert out["reviews"][0]["association"] == "NONE"
+    assert pl.head_verdicts(CFG, out) == []
 
 
 def test_add_details_reports_stalled_pr(monkeypatch, capsys):

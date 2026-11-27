@@ -22,8 +22,15 @@ new head re-arms every job. Unknown never emits: a PR whose head, checks or
 reviews could not be read completely produces no record for the step that
 needed them, and a failed run exits non-zero (UNKNOWN for every item).
 
-A verdict is a GitHub review (APPROVED / CHANGES_REQUESTED) by a login other
-than the PR author on the head commit, or a crew verdict comment from a
+Only trusted input recruits: a PR is judged only when its author is trusted,
+and a GitHub review counts only from a trusted reviewer. Trusted = GitHub
+authorAssociation in `trusted_associations` (default OWNER, MEMBER,
+COLLABORATOR) or a login in `trusted_logins` / `verdict_logins`. A missing
+association is untrusted. A drive-by review or an outside author's PR on a
+public repo therefore recruits nothing.
+
+A verdict is a GitHub review (APPROVED / CHANGES_REQUESTED) by a trusted login
+other than the PR author on the head commit, or a crew verdict comment from a
 configured `verdict_logins` login whose first line is
 `APPROVE at head <40-hex>` or `REQUEST CHANGES at head <40-hex>`. Crew share
 one operator login, so the comment form is how crew reviews are recorded;
@@ -53,6 +60,9 @@ PASS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # a fix job and never counts as green.
 FAIL = {"FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 JOBS = ("review", "task", "merge")
+TRUSTED_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR",
+                "FIRST_TIMER", "MANNEQUIN", "NONE"}
 MAX_BATCH = 20
 
 
@@ -64,6 +74,8 @@ class ConfigError(ValueError):
 class Config:
     repos: tuple[str, ...]
     verdict_logins: frozenset[str] = frozenset()
+    trusted_associations: frozenset[str] = frozenset(TRUSTED_ASSOCIATIONS)
+    trusted_logins: frozenset[str] = frozenset()
     item_prefixes: tuple[str, ...] = ("aegis",)
     skip_authors: frozenset[str] = frozenset()
     skip_branch_prefixes: tuple[str, ...] = ("release-please--",)
@@ -101,11 +113,15 @@ def load_config(path: Path | str) -> Config:
     prefixes = strings("item_prefixes", ("aegis",))
     if not prefixes or not all(re.fullmatch(r"[a-z][a-z0-9]{0,15}", p) for p in prefixes):
         raise ConfigError("item_prefixes must be lowercase seed prefixes")
+    assoc = strings("trusted_associations", TRUSTED_ASSOCIATIONS)
+    if not all(a in ASSOCIATIONS for a in assoc):
+        raise ConfigError(f"trusted_associations must be GitHub author associations: {sorted(ASSOCIATIONS)}")
     gh = doc.get("gh", ["gh"])
     gh = [gh] if isinstance(gh, str) else gh
     if not isinstance(gh, list) or not gh or not all(isinstance(s, str) and s for s in gh):
         raise ConfigError("gh must be a command (string or argv list)")
     return Config(repos=tuple(repos), verdict_logins=frozenset(strings("verdict_logins")),
+                  trusted_associations=frozenset(assoc), trusted_logins=frozenset(strings("trusted_logins")),
                   item_prefixes=tuple(prefixes), skip_authors=frozenset(strings("skip_authors")),
                   skip_branch_prefixes=tuple(strings("skip_branch_prefixes", ("release-please--",))),
                   max_prs_per_repo=n, gh=tuple(gh), timeout_s=t)
@@ -126,10 +142,20 @@ def seed_item(cfg: Config, pr: dict) -> str | None:
     return None
 
 
+def trusted(cfg: Config, login: str | None, association: str | None) -> bool:
+    """A login whose GitHub input may recruit a job: a configured login, or a
+    trusted repo association. Missing association is untrusted."""
+    if not login:
+        return False
+    return (login in cfg.trusted_logins or login in cfg.verdict_logins
+            or association in cfg.trusted_associations)
+
+
 def skipped(cfg: Config, pr: dict) -> bool:
     author = pr.get("author") or ""
     return bool(pr.get("draft") or pr.get("author_is_bot") or author.endswith("[bot]")
                 or author in cfg.skip_authors
+                or not trusted(cfg, author, pr.get("author_association"))
                 or any((pr.get("head_ref") or "").startswith(p) for p in cfg.skip_branch_prefixes))
 
 
@@ -143,6 +169,7 @@ def head_verdicts(cfg: Config, pr: dict) -> list[str] | None:
     for r in pr.get("reviews", []):
         state = r.get("state")
         if (r.get("commit") == head and r.get("author") and r["author"] != author
+                and trusted(cfg, r["author"], r.get("association"))
                 and state in ("APPROVED", "CHANGES_REQUESTED")):
             timed.append((r.get("at") or "", "approve" if state == "APPROVED" else "changes"))
     for c in pr.get("comments", []):
@@ -235,7 +262,7 @@ def list_open(cfg: Config) -> list[dict]:
         owner, name = _split(repo)
         parts.append(f"r{i}: repository(owner: {owner}, name: {name}) {{ pullRequests(states: OPEN, "
                      f"first: {cfg.max_prs_per_repo}, orderBy: {{field: UPDATED_AT, direction: DESC}}) "
-                     "{ nodes { number isDraft headRefOid headRefName title body "
+                     "{ nodes { number isDraft headRefOid headRefName title body authorAssociation "
                      "author { login __typename } } pageInfo { hasNextPage } } }")
     data = _graphql(cfg, "query { " + " ".join(parts) + " }")
     prs = []
@@ -252,7 +279,9 @@ def list_open(cfg: Config) -> list[dict]:
             prs.append({"repo": repo, "number": p["number"], "draft": bool(p["isDraft"]),
                         "head_ref_oid": p["headRefOid"], "head_ref": p["headRefName"],
                         "title": p.get("title") or "", "body": p.get("body") or "",
-                        "author": author.get("login"), "author_is_bot": author.get("__typename") == "Bot"})
+                        "author": author.get("login"),
+                        "author_association": p.get("authorAssociation"),
+                        "author_is_bot": author.get("__typename") == "Bot"})
     return prs
 
 
@@ -263,7 +292,7 @@ _DETAIL = """
      ... on CheckRun { name status conclusion startedAt isRequired(pullRequestNumber: %(n)d) }
      ... on StatusContext { context state createdAt isRequired(pullRequestNumber: %(n)d) } } } } } } }
  reviews(last: 100) { pageInfo { hasPreviousPage }
-   nodes { state submittedAt author { login } commit { oid } } }
+   nodes { state submittedAt authorAssociation author { login } commit { oid } } }
  comments(last: 100) { pageInfo { hasPreviousPage }
    nodes { createdAt author { login } body } }
 """
@@ -322,6 +351,7 @@ def add_details(cfg: Config, prs: list[dict]) -> list[dict]:
             out.append({**p, "head": commit.get("oid"), "checks": checks, "checks_complete": complete,
                         "reviews": [{"state": r["state"], "at": r.get("submittedAt"),
                                      "author": (r.get("author") or {}).get("login"),
+                                     "association": r.get("authorAssociation"),
                                      "commit": (r.get("commit") or {}).get("oid")}
                                     for r in node["reviews"]["nodes"]],
                         "reviews_complete": not node["reviews"]["pageInfo"]["hasPreviousPage"],
