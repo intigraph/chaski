@@ -482,6 +482,13 @@ def load_emitters(path: Path) -> list[tuple[emitter.Emitter, dict]]:
         elif kinds != {"jsonl"} and not ("graph" in kinds and kinds <= {"graph", "command", "alertmanager"}):
             raise RuleError(f"emitter {d['label']}: sink must be {{jsonl: <path>}} or {{graph: {{...}}}},"
                             " optionally with command: {...} and/or alertmanager: {...} beside graph")
+        if kinds == {"jsonl"} and isinstance(d["sink"]["jsonl"], dict):
+            j = d["sink"]["jsonl"]
+            if (set(j) - {"path", "project"} or not isinstance(j.get("path"), str) or not j["path"]
+                    or not isinstance(j.get("project", ""), str)):
+                raise RuleError(f"emitter {d['label']}: jsonl sink is a path or {{path: ..., project: <field>}}")
+        elif kinds == {"jsonl"} and not (isinstance(d["sink"]["jsonl"], str) and d["sink"]["jsonl"]):
+            raise RuleError(f"emitter {d['label']}: jsonl sink is a path or {{path: ..., project: <field>}}")
         if "command" in kinds and not (d["sink"]["command"] or {}).get("argv"):
             raise RuleError(f"emitter {d['label']}: command sink needs argv")
         if "alertmanager" in kinds:
@@ -558,7 +565,10 @@ def make_sink(e: emitter.Emitter, sink: dict, quipu_url: str):
         from scheduled_sink_factory import build
         return build(e, sink["scheduled"])
     if "jsonl" in sink:
-        return em.JsonlSink(sink["jsonl"])
+        j = sink["jsonl"]
+        if isinstance(j, dict):
+            return em.JsonlSink(j["path"], project=j.get("project"))
+        return em.JsonlSink(j)
     import graph_sink
 
     g = sink["graph"]

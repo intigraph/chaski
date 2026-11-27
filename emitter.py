@@ -273,6 +273,10 @@ def _validate(emitter: Emitter, records: list[dict]) -> None:
         if kind is not None and (not isinstance(kind, str) or
                                  not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", kind)):
             raise ProtocolError(f"{item}: invalid work_kind")
+        action = r.get("action")
+        if action is not None and (not isinstance(action, dict) or action.get("event_id") != r.get("event_id")
+                                   or len(json.dumps(action)) > 4096):
+            raise ProtocolError(f"{item}: action must be a small object carrying the record's event_id")
         if r["verdict"] == emitter.to_verdict and not r.get("event_id"):
             # Without a deterministic id the receiver cannot deduplicate, and a
             # send-time id would make at-least-once delivery at-least-twice.
@@ -319,6 +323,9 @@ def observe(conn: sqlite3.Connection, emitter: Emitter, records: list[dict], now
             "recipient": r.get("assignee") or r.get("owner"),
             "evidence": r.get("evidence"), "observed_at": now,
             **({"work_kind": r["work_kind"]} if r.get("work_kind") else {}),
+            # an adapter-shaped receiver line (pr-lifecycle's event contract),
+            # written verbatim by a projecting jsonl sink
+            **({"action": r["action"]} if r.get("action") is not None else {}),
         }
         cur = conn.execute(
             "INSERT OR IGNORE INTO outbox (event_id, emitter, item, generation, payload, created)"
@@ -468,8 +475,11 @@ class JsonlSink:
     exists. Deduplication is the RECEIVER's job, so it is here.
     """
 
-    def __init__(self, path: Path | str):
+    def __init__(self, path: Path | str, project: str | None = None):
+        """`project` names an event field holding the receiver line to write
+        instead of the whole event (pr-lifecycle writes its `action`)."""
         self.path = Path(path)
+        self.project = project
 
     def ids(self) -> set[str]:
         if not self.path.exists():
@@ -477,7 +487,8 @@ class JsonlSink:
         return {json.loads(line)["event_id"] for line in self.path.read_text().splitlines() if line}
 
     def delivery_scope(self) -> dict:
-        return {"kind": "jsonl", "path": str(self.path.resolve())}
+        scope = {"kind": "jsonl", "path": str(self.path.resolve())}
+        return {**scope, "project": self.project} if self.project else scope
 
     def prepare_recovery(self, event: dict) -> dict:
         return {"prior_event_id": event["prior"]["event_id"],
@@ -489,10 +500,15 @@ class JsonlSink:
         self.deliver(event)
 
     def deliver(self, event: dict) -> None:
+        line = event
+        if self.project:
+            line = event.get(self.project)
+            if not isinstance(line, dict) or line.get("event_id") != event["event_id"]:
+                raise ValueError(f"event {event['event_id']} has no {self.project} line to write")
         if event["event_id"] in self.ids():
             return  # already received: the re-send after a lost checkpoint
         with self.path.open("a") as f:
-            f.write(json.dumps(event, sort_keys=True) + "\n")
+            f.write(json.dumps(line, sort_keys=True) + "\n")
             f.flush()
 
 
