@@ -437,6 +437,27 @@ def spawn_argv(prefix: list[str], req: dict, work_item: str) -> list[str]:
     return argv
 
 
+def trigger_at(req: dict) -> float | None:
+    """When the natural GitHub event behind this request happened.
+
+    The latest of the facts that made the request READY: CI green and
+    approval for PR jobs, the newest red run for triage, publication for
+    release jobs. None when the request carries no event time."""
+    f = req.get("facts") or {}
+    stamps = [(f.get("ci") or {}).get("green_at"), (f.get("approval") or {}).get("approved_at"),
+              f.get("published_at"), *[(r or {}).get("at") for r in f.get("failed") or []]]
+    epochs = [e for e in (gr.epoch(x) for x in stamps if x) if e is not None]
+    return max(epochs) if epochs else None
+
+
+def spawn_latency(req: dict, now: float) -> str:
+    """`event_to_spawn_s=<n> trigger=<iso>`, or UNKNOWN without an event time."""
+    at = trigger_at(req)
+    if at is None:
+        return "event_to_spawn_s=UNKNOWN"
+    return f"event_to_spawn_s={max(0, round(now - at))} trigger={gr.iso(at)}"
+
+
 class StSpawner:
     """`st agent spawn --ephemeral` (shantytown #406). Exit 0 spawned,
     1 refused (cap, governor, lane), 2 could not tell: both retried."""
@@ -625,8 +646,9 @@ def _deliver_claimed(req, row, cfg, ledger, items, spawner, now) -> tuple[int, s
             ledger.lane_drop(rid)
         ledger.upsert(req, "refused", now, work_item=work_item, detail=detail, attempt=True)
         return EX_TEMPFAIL, detail
-    ledger.upsert(req, "dispatched", now, work_item=work_item, detail=detail)
-    return 0, f"dispatched {req['kind']} {rid[:12]} as {work_item}: {detail}"
+    latency = spawn_latency(req, now)
+    ledger.upsert(req, "dispatched", now, work_item=work_item, detail=f"{latency} {detail}"[:300])
+    return 0, f"dispatched {req['kind']} {rid[:12]} as {work_item} ({latency}): {detail}"
 
 
 def main(argv: list[str] | None = None) -> int:

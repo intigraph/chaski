@@ -211,6 +211,13 @@ exit 75, so chaski retries. `install` and `announce` run as `task` jobs.
 Until #406 merges, `spawner: {kind: stub}` records the exact argv in a JSONL
 file and starts nothing. `spawner: {kind: st}` is the real call.
 
+A `dispatched` request's ledger `detail` starts with
+`event_to_spawn_s=<n> trigger=<iso>`: seconds from the natural GitHub event
+(the later of CI green and approval for PR jobs, the newest red run for
+triage, publication for release jobs) to the accepted spawn. Without an event
+time it reads `event_to_spawn_s=UNKNOWN`. The receiver's stdout carries the
+same value for chaski's sink log.
+
 **What the st side must do (shantytown #406 follow-ups; hard requirements before `spawner.kind: st`):**
 
 1. **`spawn --ephemeral --job merge` takes `--head <sha>` and pins it.** The
