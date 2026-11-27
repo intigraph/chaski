@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run with only the built wheel installed, from outside the source checkout."""
+import ast
 import base64
 import hashlib
 import importlib
@@ -15,6 +16,39 @@ MODULES = ["chaski_version", "chaski_prime", "chaski_prime_state", "chaski_prime
            "alertmanager_sink", "change_frames", "change_stream", "chaski", "command_sink", "consumer_lease",
            "demo", "emitter", "external_event", "failure_family_adapter", "graph_sink", "incremental", "once",
            "pr_lifecycle"]
+SOURCE = Path(__file__).resolve().parents[1]
+
+
+def local_imports(path, local):
+    """Every top-level local module a file imports, including imports inside functions."""
+    names = set()
+    for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return names & local
+
+
+def required_modules(distribution, records):
+    """Shipped modules plus every local module they import; an unshipped import fails here.
+
+    pyproject py-modules is a hand list. It once omitted reconcile.py while chaski,
+    change_stream and incremental imported it, so installed change-driven emitters
+    failed with "No module named 'reconcile'" (aegis-d2q0).
+    """
+    local = {path.stem for path in SOURCE.glob("*.py")
+             if not path.name.startswith("test_") and path.name != "conftest.py"}
+    shipped = {name[:-3] for name in records if "/" not in name and name.endswith(".py")}
+    missing = {}
+    for name in sorted(shipped):
+        installed = Path(distribution.locate_file(records[name + ".py"]))
+        for imported in sorted(local_imports(installed, local) - shipped):
+            missing.setdefault(imported, []).append(name)
+    if missing:
+        detail = "; ".join(f"{name} (imported by {', '.join(users)})" for name, users in sorted(missing.items()))
+        raise RuntimeError(f"wheel omits imported local modules: {detail}")
+    return sorted(shipped | set(MODULES))
 
 
 def main():
@@ -25,7 +59,8 @@ def main():
     if "Wheel-Version:" not in (distribution.read_text("WHEEL") or ""):
         raise RuntimeError("distribution is not a built wheel")
     records = {str(record): record for record in distribution.files or []}
-    for name in MODULES:
+    modules = required_modules(distribution, records)
+    for name in modules:
         module = importlib.import_module(name)
         record = records.get(name + ".py")
         actual = Path(module.__file__).resolve()
@@ -70,7 +105,7 @@ def main():
         if (report["focus"] != marker or report["transitions"] != 2
                 or any(report[key] is not True for key in ("fired", "unknown_preserved", "resolved"))):
             raise RuntimeError("installed canary round trip failed")
-    print(f"{version}: {len(MODULES)} installed modules; 3 console identities; "
+    print(f"{version}: {len(modules)} installed modules; 3 console identities; "
           "canary fired, UNKNOWN preserved, resolved")
 
 
