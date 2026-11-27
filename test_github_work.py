@@ -23,7 +23,23 @@ def cfg_doc(tmp_path, **extra):
             "members": ["scbrown"], "ledger": str(tmp_path / "work.db"),
             "repos": {REPO: {"merge": {"spacing_minutes": 10, "lease_minutes": 75}}},
             "work_items": {"kind": "jsonl", "path": str(tmp_path / "items.jsonl")},
-            "spawner": {"kind": "stub", "path": str(tmp_path / "spawns.jsonl")}, **extra}
+            "spawner": {"kind": "st", "argv_prefix": [str(recording_st(tmp_path))]}, **extra}
+
+
+def recording_st(tmp_path):
+    """An `st` that records each call as `{"argv": ["st", ...]}` in spawns.jsonl
+    and exits 0. The tests' stand-in for the real spawn now that the stub
+    spawner is gone (aegis-dja): the receiver always makes the real call."""
+    script = tmp_path / "st-recorder"
+    if not script.exists():
+        script.write_text(f"""#!{sys.executable}
+import json, sys
+with open({str(tmp_path / "spawns.jsonl")!r}, "a") as f:
+    f.write(json.dumps({{"argv": ["st", *sys.argv[1:]]}}) + "\\n")
+print("spawned")
+""")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
 
 
 @pytest.fixture

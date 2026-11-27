@@ -44,3 +44,20 @@ emitters:
       jsonl:
         path: /var/lib/chaski/pr-lifecycle.jsonl
         project: action
+  # Main red -> triage task (docs/main-red.md, aegis-dja). Same adapter
+  # config, same drain contract, its own JSONL until st's drain accepts
+  # `reason: main-red` lines (see docs/main-red.md "What the st side must do").
+  - label: main-red
+    schedule: PT2M
+    owner: sattler
+    command: [chaski-main-red, --config, /etc/chaski/pr-lifecycle.yaml]
+    key: item
+    event: main_red
+    from: WAIT
+    to: READY
+    baseline_emits: false
+    timeout_s: 60
+    sink:
+      jsonl:
+        path: /var/lib/chaski/main-red.jsonl
+        project: action
