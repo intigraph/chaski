@@ -24,6 +24,30 @@ class SlotUnknown(RuntimeError):
     """A claimed slot has no durable result; reconcile, do not execute again."""
 
 
+class SlotRetired(SlotUnknown):
+    """A reviewed plan retired this UNKNOWN claim; it is never executed again."""
+
+
+RETIREMENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS slot_retirements (
+    slot TEXT NOT NULL PRIMARY KEY,
+    binding TEXT NOT NULL,
+    plan_sha256 TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition='retired-unknown'),
+    reason TEXT NOT NULL,
+    ruling_ref TEXT NOT NULL,
+    source_utc TEXT NOT NULL,
+    recorded_at REAL NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS slot_retirements_no_update
+ BEFORE UPDATE ON slot_retirements BEGIN
+ SELECT RAISE(ABORT,'slot retirement ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS slot_retirements_no_delete
+ BEFORE DELETE ON slot_retirements BEGIN
+ SELECT RAISE(ABORT,'slot retirement ledger is append-only'); END;
+"""
+
+
 def _canonical(value: dict) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -53,6 +77,9 @@ class SlotLedger:
         with closing(self._connect()) as conn, conn:
             conn.execute("CREATE TABLE IF NOT EXISTS slots ("
                          "slot TEXT PRIMARY KEY, binding TEXT NOT NULL, result TEXT)")
+            # aegis-se8: a retirement receipt records an operator-reviewed
+            # end of an UNKNOWN claim. It is not a result and never a rerun.
+            conn.executescript(RETIREMENT_SCHEMA)
 
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=10)
@@ -77,6 +104,9 @@ class SlotLedger:
                 if previous != digest:
                     raise SlotConflict("slot execution binding changed")
                 if result is None:
+                    if conn.execute("SELECT 1 FROM slot_retirements WHERE slot=?",
+                                    (slot,)).fetchone():
+                        raise SlotRetired("claimed slot retired UNKNOWN by a reviewed plan")
                     raise SlotUnknown("claimed slot needs reconciliation")
                 return json.loads(result)
             # Exceptions, timeout, kill or a failure to persist the result leave
