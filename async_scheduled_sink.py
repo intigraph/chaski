@@ -11,6 +11,7 @@ from contextvars import copy_context
 from dataclasses import asdict
 import json
 import threading
+import time
 
 from scheduled_receiver import ExecutionScope, receive, run_id
 from slot_receiver import SlotLedger
@@ -35,8 +36,11 @@ class AsyncScheduledSink:
     """
 
     def __init__(self, ledger: SlotLedger, scope: ExecutionScope, port_factory,
-                 execute, *, workers: int = 1, capacity: int = 4):
+                 execute, *, workers: int = 1, capacity: int = 4,
+                 delivery_ttl_s: int | None = None, clock=time.time):
         scope.validate()
+        if delivery_ttl_s is not None and (type(delivery_ttl_s) is not int or delivery_ttl_s <= 0):
+            raise ValueError("positive integer delivery TTL required")
         if (type(workers) is not int or type(capacity) is not int or
                 not 1 <= workers <= capacity <= 64):
             raise ValueError("require 1 <= workers <= capacity <= 64")
@@ -45,6 +49,8 @@ class AsyncScheduledSink:
         self.ledger, self.scope = ledger, scope
         self.port_factory, self.execute = port_factory, execute
         self.capacity = capacity
+        self.delivery_ttl_s, self._clock = delivery_ttl_s, clock
+        self._slots = {}
         self._lock = threading.Lock()
         self._pending = {}
         self._closed = False
@@ -66,6 +72,7 @@ class AsyncScheduledSink:
         with self._lock:
             if self._closed:
                 raise ConnectionError("scheduled receiver is closed")
+            self._evict_expired(keep=identity)
             future = self._pending.get(identity)
             if future is None:
                 if len(self._pending) >= self.capacity:
@@ -73,6 +80,7 @@ class AsyncScheduledSink:
                 context = copy_context()
                 future = self._pool.submit(context.run, self._receive, slot, binding)
                 self._pending[identity] = future
+                self._slots[identity] = slot
                 # Submission is not a durable receipt, even if a fast worker
                 # happens to finish before this call exits.
                 raise DeliveryPending("scheduled delivery submitted; receipt pending")
@@ -82,6 +90,26 @@ class AsyncScheduledSink:
                 future.result()  # terminal publication verified, or real error
             finally:
                 del self._pending[identity]
+                self._slots.pop(identity, None)
+
+    def _evict_expired(self, keep):
+        """aegis-se8: release finished work whose slot is past the delivery TTL.
+
+        The emitter never selects such a firing again, so its unacknowledged
+        future would hold capacity forever. receive() persisted the terminal
+        result before publication, so nothing durable is lost: a later
+        delivery replays from the ledger and never re-runs the child.
+        Unfinished work, and the identity being delivered, are never evicted.
+        Caller holds the lock.
+        """
+        if self.delivery_ttl_s is None:
+            return
+        horizon = self._clock() - self.delivery_ttl_s
+        for identity, future in list(self._pending.items()):
+            if (identity != keep and future.done()
+                    and self._slots.get(identity, horizon) < horizon):
+                del self._pending[identity]
+                del self._slots[identity]
 
     def _receive(self, slot, binding):
         port = self.port_factory(slot)

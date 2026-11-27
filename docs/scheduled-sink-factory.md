@@ -10,7 +10,7 @@ true`, the default `item` key and BLOCKED-to-UNBLOCKED transition. Generation
 rewriting, recovery, missing-as-from and renewal are refused: they would change
 the canonical signed slot identity or acknowledge a different protocol.
 
-The scheduled mapping has exactly these fields:
+The scheduled mapping has exactly these fields, plus the optional `delivery_ttl_s`:
 
 | Field | Meaning |
 | --- | --- |
@@ -19,6 +19,18 @@ The scheduled mapping has exactly these fields:
 | `shuttle` | `executable`, `config`, `config_sha256`, `timeout_s` for the existing process port. |
 | `execute` | Fixed `argv`, `cwd`, `env`, `result_fd_env`, `timeout_s`, `output_limit`. |
 | `workers`, `capacity` | Explicit bounds, with `1 <= workers <= capacity <= 64`. |
+| `delivery_ttl_s` | Optional integer seconds, 60..2592000 (aegis-se8). |
+
+With `delivery_ttl_s`, a firing queued longer ago than the TTL is never selected
+for delivery again. It stays retained, undelivered and counted as pending (so the
+oldest-pending metric still shows it), but it cannot spend write budget or take
+receiver capacity from a newer slot. The receiver also releases a finished,
+unacknowledged future once its slot is past the TTL; its terminal result is
+already in the slot ledger, so a later delivery replays it and never re-runs the
+child. Unfinished work is never released. The TTL is not part of the bound
+receiver scope, so adding it does not invalidate bound rows. Clear a retained
+stale backlog with the reviewed `chaski-scheduled-expiry` (chaski #98) once it
+lands; a heartbeat uses two slots (`7200` for hourly).
 
 The signed scope's `manifest_sha256` must equal
 `execution_manifest_sha256(execute)`: SHA256 of UTF-8 canonical JSON
