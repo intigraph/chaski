@@ -13,7 +13,8 @@ import tempfile
 
 MODULES = ["chaski_version", "chaski_prime", "chaski_prime_state", "chaski_primer",
            "alertmanager_sink", "change_frames", "change_stream", "chaski", "command_sink", "consumer_lease",
-           "adapter_stderr", "demo", "emitter", "external_event", "failure_family_adapter", "graph_sink", "incremental", "once"]
+           "adapter_stderr", "demo", "emitter", "external_event", "failure_family_adapter", "graph_sink",
+           "incremental", "once"]
 
 
 def main():
