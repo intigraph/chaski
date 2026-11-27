@@ -305,3 +305,64 @@ def test_concurrent_deliveries_of_one_request_file_one_item(env):
         t.join()
     assert len(lines(tmp / "items.jsonl")) == 1 and len(lines(tmp / "spawns.jsonl")) == 1
     assert sorted(codes)[0] == 0 and set(codes) <= {0, gw.EX_TEMPFAIL}
+
+
+def fake_st(tmp_path, code=0, out="spawned eph-review-1"):
+    """An `st` that records its argv and environment and exits `code`."""
+    log = tmp_path / "st-calls.jsonl"
+    script = tmp_path / "st"
+    script.write_text(f"""#!{sys.executable}
+import json, os, sys
+with open({str(log)!r}, "a") as f:
+    f.write(json.dumps({{"argv": sys.argv[1:], "agent": os.environ.get("SHANTY_AGENT")}}) + "\\n")
+print({out!r})
+sys.exit({code})
+""")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script, log
+
+
+def test_st_spawner_makes_the_real_call_as_the_administrator_and_records_latency(tmp_path):
+    script, log = fake_st(tmp_path)
+    cfg = gr.parse_config(cfg_doc(tmp_path, spawner={"kind": "st", "argv_prefix": [str(script)]}))
+    ledger = gw.Ledger(cfg.ledger)
+    items, spawner = gw.make_ports(cfg)
+    assert isinstance(spawner, gw.StSpawner)
+    now = ts(GREEN_AT) + 600
+    ev = events_for(cfg, [ep(n) for n in BASE], now, [verdict("sattler")], {PR177: "lex"})["merge"]
+    code, msg = gw.deliver(ev, cfg, ledger, items, spawner, now)
+    assert code == 0 and "event_to_spawn_s=" in msg
+    calls = lines(log)
+    assert len(calls) == 1 and calls[0]["agent"] == "hammond"
+    assert calls[0]["argv"][:4] == ["agent", "spawn", "--ephemeral", "--job"]
+    assert calls[0]["argv"][calls[0]["argv"].index("--head") + 1] == HEAD
+    row = ledger.get(ev["event_id"])
+    assert row["state"] == "dispatched" and row["detail"].startswith("event_to_spawn_s=")
+    # A replay is a duplicate: the real st is not called twice.
+    assert gw.deliver(ev, cfg, ledger, items, spawner, now + 60)[0] == 0
+    assert len(lines(log)) == 1
+    ledger.close()
+
+
+def test_st_spawner_refusal_is_a_retry_that_drops_the_lane(tmp_path):
+    script, log = fake_st(tmp_path, code=1, out="refused: pool at cap")
+    cfg = gr.parse_config(cfg_doc(tmp_path, spawner={"kind": "st", "argv_prefix": [str(script)]}))
+    ledger = gw.Ledger(cfg.ledger)
+    items, spawner = gw.make_ports(cfg)
+    now = ts(GREEN_AT) + 600
+    ev = events_for(cfg, [ep(n) for n in BASE], now, [verdict("sattler")], {PR177: "lex"})["merge"]
+    code, msg = gw.deliver(ev, cfg, ledger, items, spawner, now)
+    assert code == gw.EX_TEMPFAIL and "st exited 1" in msg and "cap" in msg
+    assert ledger.get(ev["event_id"])["state"] == "refused"
+    assert ledger.lane_status(REPO) == []
+    ledger.close()
+
+
+def test_trigger_at_is_the_latest_event_fact_per_kind():
+    merge = {"facts": {"ci": {"green_at": "2026-11-21T03:00:00Z"},
+                       "approval": {"approved_at": "2026-11-21T03:05:00Z"}}}
+    assert gw.trigger_at(merge) == gr.epoch("2026-11-21T03:05:00Z")
+    triage = {"facts": {"failed": [{"at": "2026-11-21T02:00:00Z"}, {"at": "2026-11-21T02:10:00Z"}]}}
+    assert gw.spawn_latency(triage, gr.epoch("2026-11-21T02:11:30Z")) == \
+        "event_to_spawn_s=90 trigger=2026-11-21T02:10:00Z"
+    assert gw.spawn_latency({"facts": {}}, 0) == "event_to_spawn_s=UNKNOWN"
