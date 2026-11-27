@@ -97,5 +97,8 @@ schedule for `--send` is a deployment choice. It is not set here.
    scratch discussion and a test issue comment each reach the phone within
    2 minutes as exactly one push, and a crew comment produces no push.
 
+The drafting watch job (item 3) is `chaski-github-watch`. It reads this same
+config file; see `docs/github-watch.md`.
+
 The adapter runs offline against `{"episodes": [{"episode": ...}]}` with
 `--fixture`. See `test_cli_adapter_runs_offline_against_the_fixture`.
