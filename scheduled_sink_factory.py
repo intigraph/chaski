@@ -17,6 +17,9 @@ from shuttle_process_port import ShuttleProcessPort
 from slot_receiver import SlotLedger
 
 
+MIN_TTL_S, MAX_TTL_S = 60, 30 * 86400
+
+
 def _keys(value, expected):
     if type(value) is not dict or set(value) != set(expected):
         raise ValueError('complete supported scheduled sink configuration required')
@@ -31,7 +34,8 @@ def execution_manifest_sha256(recipe):
 
 def validate(config):
     """Validate and copy fixed execution policy, without opening a ledger."""
-    _keys(config, ('scope', 'ledger', 'shuttle', 'execute', 'workers', 'capacity'))
+    base = ('scope', 'ledger', 'shuttle', 'execute', 'workers', 'capacity')
+    _keys(config, base + (('delivery_ttl_s',) if 'delivery_ttl_s' in config else ()))
     _keys(config['scope'], (f.name for f in fields(ExecutionScope)))
     scope = ExecutionScope(**config['scope'])
     scope.validate()
@@ -51,7 +55,12 @@ def validate(config):
     ledger = config['ledger']
     if type(ledger) is not str or not Path(ledger).is_absolute():
         raise ValueError('absolute persistent ledger path required')
-    return scope, ledger, shuttle, execute, workers, capacity
+    ttl = config.get('delivery_ttl_s')
+    # aegis-se8: a firing queued longer ago than this is never selected again,
+    # so stale retries cannot hold the receiver. It stays retained and pending.
+    if ttl is not None and (type(ttl) is not int or not MIN_TTL_S <= ttl <= MAX_TTL_S):
+        raise ValueError(f'delivery_ttl_s must be an integer {MIN_TTL_S}..{MAX_TTL_S}')
+    return scope, ledger, shuttle, execute, workers, capacity, ttl
 
 
 def _check_local_files(ledger, shuttle):
@@ -88,15 +97,15 @@ def validate_emitter(emitter):
 
 
 def build(emitter, config):
-    scope, ledger, shuttle, execute, workers, capacity = validate(config)
+    scope, ledger, shuttle, execute, workers, capacity, ttl = validate(config)
     validate_emitter(emitter)
     _check_local_files(ledger, shuttle)
     receiver = AsyncScheduledSink(SlotLedger(ledger), scope,
         lambda slot: ShuttleProcessPort(shuttle['executable'], shuttle['config'],
             shuttle['config_sha256'], scope, slot, timeout_s=shuttle['timeout_s']),
-        execute, workers=workers, capacity=capacity)
+        execute, workers=workers, capacity=capacity, delivery_ttl_s=ttl)
     try:
-        return ScheduledEventSink(receiver, emitter.label, emitter.owner)
+        return ScheduledEventSink(receiver, emitter.label, emitter.owner, delivery_ttl_s=ttl)
     except BaseException:
         receiver.close()
         raise

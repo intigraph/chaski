@@ -600,11 +600,18 @@ def deliver_pending(conn: sqlite3.Connection, sink: Sink, now: float, emitter: s
             return 0, 1
         _SETUP_FAILURES.pop(emitter, None)
     tables = ("outbox", "recovery_outbox") if resolve_recovery else ("outbox",)
+    # aegis-se8: a sink with a delivery TTL (scheduled heartbeat) never selects a
+    # firing queued longer ago. It stays retained, undelivered and counted as
+    # pending, but cannot take budget or receiver capacity from a newer slot.
+    ttl = getattr(sink, "delivery_ttl_s", None)
+    fresh = {table: ("", ()) for table in tables}
+    if ttl is not None:
+        fresh["outbox"] = (" AND created>=?", (now - ttl,))
     query = " UNION ALL ".join(
         f"SELECT event_id,payload,attempts,created,'{table}' AS source_table FROM {table}"
         " WHERE emitter=? AND delivered_at IS NULL AND next_attempt<=? AND "
-        + undisposed(table) for table in tables)
-    args = [value for _ in tables for value in (emitter, now)] + [limit]
+        + undisposed(table) + fresh[table][0] for table in tables)
+    args = [value for table in tables for value in (emitter, now, *fresh[table][1])] + [limit]
     rows = conn.execute(query + " ORDER BY created LIMIT ?", args).fetchall()
     ok = failed = 0
     for event_id, payload, attempts, _created, table in rows:
