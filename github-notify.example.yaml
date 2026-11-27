@@ -1,0 +1,25 @@
+# chaski public-repo activity notifier (docs/github-notify.md). NOT ACTIVE:
+# nothing reads this file until an emitter names it.
+version: 1
+graph: https://camayoc.local/operational/github
+# The public portfolio. Each repo also needs discussion/discussion_comment on
+# its camayoc ingress webhook (goldblum scripts/github-webhook-hooks.py).
+repos:
+  - intigraph/quipu
+  - intigraph/bobbin
+  - intigraph/chaski
+  - scbrown/pixelsrc
+  - scbrown/homebrew-pixelsrc
+# Crew logins: digest only, never a push. Logins ending in [bot] are always bots.
+crew: [scbrown]
+bots: []
+# Activities older than this never notify (first start, long outages).
+max_age_minutes: 180
+ledger: ~/.local/state/chaski/github-notify.db
+ntfy:
+  url: https://ntfy.sh
+  topic: CHANGE-ME
+  # token_file: /etc/chaski/ntfy-token
+  timeout_s: 10
+# Optional: prints the first line of the event at the URL appended to argv.
+# first_line: {argv: [/usr/local/bin/github-first-line]}

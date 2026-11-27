@@ -14,3 +14,11 @@ Regenerate from a camayoc checkout:
 Tests derive second states (a red run, a second PR, a later push) from these
 records by changing named fields (`test_github_routes.variant`). Verdict
 records are synthetic, because no verdict writer exists yet.
+
+`notify-episodes.json` (github_notify tests) holds synthetic deliveries, not
+recorded ones: an outside discussion, outside and crew discussion comments,
+outside and bot issue comments, an edited comment and an outside issue. Each
+payload was mapped by camayoc's own `episode_for` at camayoc main a1b29489
+(the discussion/discussion_comment mapping from camayoc #272). The logins
+`outside-person`, `scbrown` and `github-actions[bot]` stand for outside, crew
+and bot actors.
