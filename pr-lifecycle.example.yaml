@@ -1,0 +1,46 @@
+# chaski-pr-lifecycle adapter config (docs/pr-lifecycle.md, aegis-za4f.21).
+# The intigraph repos crew opens PRs in.
+repos:
+  - intigraph/quipu
+  - intigraph/shantytown
+  - intigraph/seeds
+  - intigraph/camayoc
+  - intigraph/chaski
+  - intigraph/rikuy
+  - intigraph/bobbin
+  - intigraph/yupana
+  - intigraph/shuttle
+  - intigraph/tambo
+# Logins whose "APPROVE at head <sha>" / "REQUEST CHANGES at head <sha>"
+# comments are crew review verdicts (crew share the operator login).
+verdict_logins: [scbrown]
+# Only these GitHub authorAssociation values (or trusted_logins /
+# verdict_logins) may recruit: PRs by other authors are not judged, and
+# reviews by other logins are not verdicts. A drive-by review on a public repo
+# recruits nothing.
+trusted_associations: [OWNER, MEMBER, COLLABORATOR]
+trusted_logins: []
+item_prefixes: [aegis]
+skip_authors: []
+skip_branch_prefixes: [release-please--]
+max_prs_per_repo: 30
+gh: [gh]
+timeout_s: 60
+# --- emitter ---
+# Add this block to the chaski rules file (the adapter config above goes to
+# /etc/chaski/pr-lifecycle.yaml).
+emitters:
+  - label: pr-lifecycle
+    schedule: PT2M
+    owner: sattler
+    command: [chaski-pr-lifecycle, --config, /etc/chaski/pr-lifecycle.yaml]
+    key: item
+    event: pr_action
+    from: WAIT
+    to: READY
+    baseline_emits: true
+    timeout_s: 90
+    sink:
+      jsonl:
+        path: /var/lib/chaski/pr-lifecycle.jsonl
+        project: action
