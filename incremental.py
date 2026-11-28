@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import subprocess
+import time
 import urllib.parse
 
 from change_stream import StagedRecords
@@ -138,6 +139,10 @@ class AdapterBudget:
 class NotAdmitted(Exception):
     """The global request budget did not admit this call now (not a failure)."""
 
+    def __init__(self, reason="tokens"):
+        super().__init__(reason)
+        self.reason = reason
+
 
 class ChangeRunner(Runner):
     # Defaults for runners built without __init__ (fixtures); __init__ overrides.
@@ -149,6 +154,9 @@ class ChangeRunner(Runner):
     batch = BATCH
     cost_per_item = None
     adapter_budget = None
+    _waiting_since = None
+    not_admitted: dict = {}   # rebound, never mutated, so the class default stays empty
+    _started_at = 0.0
     # aegis-g68w.14: after this many consecutive live evaluations while reconcile
     # work is due, one reconcile batch runs (a bounded share, not strict priority).
     RECONCILE_EVERY = 4
@@ -169,6 +177,11 @@ class ChangeRunner(Runner):
         self.cost_per_item = None
         self._kind_cost = {}      # call kind -> EWMA of the settled request cost
         self._live_streak = 0     # consecutive live evaluations with reconcile work due
+        # aegis-exe6.1: refusals were silent, so "0 crashes" read as healthy while no
+        # emitter ran. Count them by reason, and remember when the current wait began.
+        self.not_admitted = {}
+        self._waiting_since = None
+        self._started_at = time.time()
         conn.executescript(SCHEMA)
         prepare_inbox_projection(conn)
         self.subscription = call(emitter)
@@ -219,7 +232,38 @@ class ChangeRunner(Runner):
             isinstance(record.get(k), dict) and record[k].get("ref") in self.types
             for k in ("value", "old_value"))
 
-    def _reservation(self, kind, items=None):
+    def _cap(self, now):
+        """The hard cap for one call: call_requests, but never more than the bucket
+        can actually reach (aegis-exe6.1). FEED/SINK traffic held the bucket at
+        <= 20 tokens while a first call reserved 40, so it was never admitted."""
+        rb = self.request_budget
+        if rb is None or now is None:
+            return self.call_requests
+        return max(1, min(self.call_requests, rb.attainable(now)))
+
+    def _starved(self, now):
+        """Not admitted for STARVATION_S: the next call is one minimal batch that
+        skips the priority wait (as the reconcile class's guard does)."""
+        from reconcile import STARVATION_S
+        return (self.request_budget is not None and self._waiting_since is not None
+                and now - self._waiting_since >= STARVATION_S)
+
+    def _limit(self, kind, base, now):
+        """Size a batch to the cap the way _adapt_batch does: a measured per-item
+        cost fills ~80% of the cap; with no measurement yet, scale the default
+        batch down by the cap's share of call_requests. A starved call sends one."""
+        if self.request_budget is None:
+            return base
+        if self._starved(now):
+            return 1
+        cap = self._cap(now)
+        if kind == "evaluate" and self.cost_per_item is not None:
+            return max(1, min(base, int(cap * 0.8 // self.cost_per_item)))
+        if self._kind_cost.get(kind) is None and cap < self.call_requests:
+            return max(1, base * cap // self.call_requests)
+        return base
+
+    def _reservation(self, kind, items=None, now=None):
         """Requests to pre-reserve for one call of this kind (aegis-g68w.14).
 
         The reservation is also the hard cap passed to the adapter, so the bucket
@@ -229,21 +273,36 @@ class ChangeRunner(Runner):
         Reserving the full cap for every call held ~2.6x the tokens actually spent
         and starved the drain behind them. An evaluation scales with its batch,
         which _adapt_batch grows, so it reserves per item for the batch it sends."""
+        cap = self._cap(now)
         if kind == "evaluate" and items and self.cost_per_item is not None and kind in self._kind_cost:
-            return max(1, min(self.call_requests, math.ceil(self.cost_per_item * items * 1.25)))
+            return max(1, min(cap, math.ceil(self.cost_per_item * items * 1.25)))
         ewma = self._kind_cost.get(kind)
         if ewma is None:
-            return self.call_requests
-        return max(1, min(self.call_requests, math.ceil(ewma * 1.25)))
+            return cap
+        return max(1, min(cap, math.ceil(ewma * 1.25)))
 
     def _call(self, cls, request, now, kind="evaluate"):
         """One adapter call, pre-reserved against the global budget when it exists."""
         rb = self.request_budget
         if rb is None:
             return call(self.emitter, request)
-        reserve = self._reservation(kind, len(request.get("items") or ()))
-        if not rb.try_reserve(cls, reserve, now):
-            raise NotAdmitted()
+        reserve = self._reservation(kind, len(request.get("items") or ()), now)
+        starved = self._starved(now)
+        reason = rb.reserve(cls, reserve, now, starved=starved)
+        if reason is not None:
+            self.not_admitted = {**self.not_admitted, reason: self.not_admitted.get(reason, 0) + 1}
+            if self._waiting_since is None:
+                self._waiting_since = now
+                LOG.info("incremental emitter %s not admitted (%s): %s call needs %d of %.1f tokens",
+                         self.emitter.label, reason, kind, reserve, rb.tokens)
+            else:
+                LOG.debug("incremental emitter %s not admitted (%s), waiting %.0fs",
+                          self.emitter.label, reason, now - self._waiting_since)
+            raise NotAdmitted(reason)
+        if starved:
+            LOG.warning("incremental emitter %s starved %.0fs; one minimal %s call admitted (%d requests)",
+                        self.emitter.label, now - self._waiting_since, kind, reserve)
+        self._waiting_since = None
         # A failed call keeps its whole reservation: an error storm stays bounded.
         try:
             out = call(self.emitter, dict(request, budget={"max_requests": reserve}))
@@ -297,7 +356,7 @@ class ChangeRunner(Runner):
             "WHERE emitter=? AND json_extract(payload,'$.entity') IN "
             "(SELECT +entity FROM change_inbox_frontier WHERE emitter=? "
             " ORDER BY min_tx,min_seq,entity LIMIT ?) ORDER BY tx,seq",
-            (label, label, BATCH)).fetchall()
+            (label, label, self._limit("route", BATCH, now))).fetchall()
         if not pending:
             return False
         from reconcile import LIVE
@@ -324,7 +383,7 @@ class ChangeRunner(Runner):
         label = self.emitter.label
         if self.paused:
             return False
-        limit = self.batch if self.request_budget is not None else BATCH
+        limit = self._limit("evaluate", self.batch, now) if self.request_budget is not None else BATCH
         selected = self.conn.execute(
             "SELECT item,priority FROM adapter_deadlines WHERE emitter=? AND due<=? ORDER BY priority,due,item LIMIT ?",
             (label, now, limit)).fetchall()
@@ -441,7 +500,9 @@ class ChangeRunner(Runner):
             from reconcile import LIVE
             kind = "route" if pending else "evaluate"
             source_due = max(source_due, self.retry_at,
-                             self.request_budget.due(self._reservation(kind, self.batch), now, LIVE))
+                             self.request_budget.due(
+                                 self._reservation(kind, self._limit(kind, self.batch, now), now), now,
+                                 None if self._starved(now) else LIVE))
             if self.suspended or self.paused:
                 source_due = max(source_due, now + 60)
         else:
@@ -460,7 +521,8 @@ class ChangeRunner(Runner):
         pending = row[0] if row else 0
         count, due = self.conn.execute("SELECT COUNT(*), MIN(due) FROM adapter_deadlines WHERE emitter=?",
                                       (self.emitter.label,)).fetchone()
-        snap.update(change_pending=pending, deadlines=count, next_due=due or 0)
+        snap.update(change_pending=pending, deadlines=count, next_due=due or 0,
+                    not_admitted=dict(self.not_admitted), started_at=self._started_at)
         return snap
 
     def metrics(self, esc):
@@ -470,6 +532,15 @@ class ChangeRunner(Runner):
         for name, value in (("changes_pending", s["change_pending"]), ("deadlines", s["deadlines"]),
                             ("next_due_timestamp_seconds", s["next_due"])):
             lines.append(f'chaski_emitter_{name}{{emitter="{esc(self.emitter.label)}"}} {value}')
+        if self.request_budget is not None:
+            label = esc(self.emitter.label)
+            # aegis-exe6.1: refusals are not failures, but they are not health either.
+            for reason in ("priority", "tokens"):
+                lines.append(f'chaski_emitter_not_admitted_total{{emitter="{label}",reason="{reason}"}} '
+                             f'{s.get("not_admitted", {}).get(reason, 0)}')
+            since = s["last_success"] or s.get("started_at") or time.time()
+            lines.append(f'chaski_emitter_last_run_age_seconds{{emitter="{label}"}} '
+                         f'{max(0.0, time.time() - since):.0f}')
         return lines
 
 
