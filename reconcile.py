@@ -40,6 +40,11 @@ BLOCKED_RECHECK_S = 5.0    # a caller blocked only by priority re-checks this of
 WINDOW_S = 900.0           # the bound is stated over any 15-minute window
 STARVATION_S = 600.0       # the reconcile class gets at least one grant per this interval
 JUMP_RETRY_S = 300.0       # a rolled-back cursor jump waits this long before retrying
+# aegis-exe6.1: a reservation the bucket never reaches is never admitted. The
+# attainable level is the highest token count observed over the last one to two
+# windows of this length (at least the time an empty bucket needs to refill to
+# the burst); before a full window has passed it is assumed to be the burst.
+PEAK_WINDOW_FLOOR_S = 120.0
 
 BUDGET_SCHEMA = """
 CREATE TABLE IF NOT EXISTS request_budget (
@@ -93,13 +98,37 @@ class RequestBudget:
         self.adapter_requests_total = 0
         self.adapter_accounting_unknown_total = 0
         self.violations: dict[str, int] = {}
+        self.peak_window = max(PEAK_WINDOW_FLOOR_S, 2.0 * burst / self.rate)
+        self._peak_start: float | None = None
+        self._peak_cur = self.tokens
+        self._peak_prev = float(burst)   # UNKNOWN until one window is observed: assume the burst
 
-    def _refill(self, now: float) -> None:
+    def _refill(self, now: float, observe: bool = True) -> None:
         if self.updated is None:
             self.updated = now
         elif now > self.updated:
             self.tokens = min(self.burst, self.tokens + (now - self.updated) * self.rate)
             self.updated = now
+        if observe:
+            self._observe(now)
+
+    def _observe(self, now: float) -> None:
+        """Track the bucket's high-water mark in rolling windows (aegis-exe6.1)."""
+        if self._peak_start is None:
+            self._peak_start = now
+        elif now - self._peak_start >= self.peak_window:
+            self._peak_prev, self._peak_cur, self._peak_start = self._peak_cur, self.tokens, now
+        self._peak_cur = max(self._peak_cur, self.tokens)
+
+    def attainable(self, now: float) -> int:
+        """The largest whole reservation this bucket has recently been seen to hold.
+
+        Higher classes (FEED/SINK) that keep the bucket below the burst make a
+        burst-sized reservation impossible; capping at this level keeps every
+        reservation one the bucket actually reaches. Never below 1."""
+        with self.lock:
+            self._refill(now)
+            return max(1, min(self.burst, int(max(self._peak_prev, self._peak_cur) + 1e-9)))
 
     def _persist(self) -> None:
         self.conn.execute("INSERT INTO request_budget VALUES (1,?,?) ON CONFLICT(id) DO UPDATE"
@@ -114,23 +143,36 @@ class RequestBudget:
 
     def try_reserve(self, cls: int, k: int, now: float) -> bool:
         """Take k tokens for a call that will make at most k requests."""
+        return self.reserve(cls, k, now) is None
+
+    def reserve(self, cls: int, k: int, now: float, starved: bool = False) -> str | None:
+        """try_reserve that says why not: None when granted, else "priority" (a
+        higher class is waiting) or "tokens" (the bucket holds fewer than k).
+        `starved` skips the priority wait, as the reconcile class's guard does;
+        the tokens must still be there."""
         if cls not in CLASS_NAMES:
             raise BudgetError(f"unknown budget class {cls!r}")
         if type(k) is not int or not 1 <= k <= self.burst:
             raise BudgetError(f"a reservation must be 1..{self.burst} requests, got {k!r}")
         with self.lock:
-            self._refill(now)
-            if self._blocked_by_higher(cls, now) or self.tokens < k:
+            # A grant is observed AFTER it takes its tokens: the level a FEED/SINK
+            # grant passes through is not one a lower class can ever hold.
+            self._refill(now, observe=False)
+            blocked = not starved and self._blocked_by_higher(cls, now)
+            if blocked or self.tokens < k:
+                self._observe(now)
                 self.demand[cls] = now                 # refreshed on every attempt
                 self.waiting_since.setdefault(cls, now)
-                return False   # nothing spent; the refill is persisted with the next grant
+                # nothing spent; the refill is persisted with the next grant
+                return "priority" if blocked else "tokens"
             self.tokens -= k
+            self._observe(now)
             self.demand.pop(cls, None)
             self.waiting_since.pop(cls, None)
             self.last_grant[cls] = now
             self.reserved_total[cls] += k
             self._persist()
-            return True
+            return None
 
     def settle(self, reserved: int, cost, label: str) -> int:
         """Refund reserved - actual. A missing or over-cap cost is charged in full
@@ -149,6 +191,8 @@ class RequestBudget:
             with self.lock:
                 self.tokens = min(self.burst, self.tokens + refund)
                 self.refunded_total += refund
+                if self.updated is not None:
+                    self._observe(self.updated)
                 self._persist()
         return actual
 
@@ -183,6 +227,10 @@ class RequestBudget:
                  f"chaski_budget_tokens {self.tokens:.3f}",
                  f"chaski_budget_rate_requests_per_second {self.rate}",
                  f"chaski_budget_burst_requests {self.burst}",
+                 "# HELP chaski_budget_attainable_requests Highest token level recently observed;"
+                 " reservations are capped here.",
+                 "# TYPE chaski_budget_attainable_requests gauge",
+                 f"chaski_budget_attainable_requests {max(self._peak_prev, self._peak_cur):.3f}",
                  f"chaski_budget_refunded_total {self.refunded_total}"]
         lines += [f'chaski_budget_reserved_total{{class="{CLASS_NAMES[c]}"}} {n}'
                   for c, n in sorted(self.reserved_total.items())]
