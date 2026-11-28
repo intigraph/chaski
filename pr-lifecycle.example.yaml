@@ -24,6 +24,18 @@ item_prefixes: [aegis]
 skip_authors: []
 skip_branch_prefixes: [release-please--]
 max_prs_per_repo: 30
+# A verdict carries to a new head that only merged the base branch in
+# (Stiwi 2026-11-28: no re-review when main changes). docs/pr-lifecycle.md.
+carry_verdicts_over_base_merges: true
+# An APPROVE carries across a merge only when its tree is the clean
+# `git merge-tree --write-tree` of its parents, proved in blobless mirrors
+# here. Unset: approvals never carry (REQUEST CHANGES still does).
+git_cache: /var/lib/chaski/pr-lifecycle-git
+git: [git]
+# Quipu's stored query repo_review_mode decides per repo; mode "none" never
+# recruits a review (green merges, red gets a fix). Unset or unreadable:
+# review required.
+quipu_url: http://quipu.svc
 gh: [gh]
 timeout_s: 60
 # --- emitter ---
