@@ -21,14 +21,19 @@ class CostlyAdapters(Adapters):
     """A budget-capped adapter whose items have real costs: a call whose cost
     exceeds its hard cap fails, as the real adapters do."""
 
-    def __init__(self, item_cost):
+    def __init__(self, item_cost, transient=0):
         super().__init__({"a": set()})
-        self.item_cost, self.failed = item_cost, []
+        self.item_cost, self.failed, self.transient = item_cost, [], transient
 
     def __call__(self, emitter, request=None):
         if request is None or "items" not in request:
             return super().__call__(emitter, request)
         need = sum(self.item_cost(i) for i in request["items"])
+        if self.transient:
+            self.transient -= 1
+            self.calls.append((emitter.label, request))
+            self.failed.append((request["budget"]["max_requests"], "transient"))
+            raise RuntimeError("adapter exited 3: quipu 502")
         if need > request["budget"]["max_requests"]:
             self.calls.append((emitter.label, request))
             self.failed.append((request["budget"]["max_requests"], need))
@@ -38,9 +43,9 @@ class CostlyAdapters(Adapters):
         return out
 
 
-def runner(tmp_path, monkeypatch, cost, call_requests=40, burst=40):
+def runner(tmp_path, monkeypatch, cost, call_requests=40, burst=40, transient=0):
     conn = connect(tmp_path / "emitter.db")
-    adapters = CostlyAdapters(lambda item: cost)
+    adapters = CostlyAdapters(lambda item: cost, transient)
     monkeypatch.setattr(inc, "call", adapters)
     budget = rc.RequestBudget(conn, 1.0, burst)
     r = inc.ChangeRunner(Emitter("a", ["unused"], 86400, "owner", change_driven=True), conn, Sink(),
@@ -95,7 +100,7 @@ def test_an_item_costing_more_than_call_requests_is_a_loud_configuration_error_n
     assert caps(adapters)[-1] == 16
     assert any("CONFIGURATION ERROR" in m and "call_requests=15" in m for m in caplog.messages)
     text = "\n".join(r.metrics(lambda s: s))
-    assert 'chaski_emitter_min_call_cost{emitter="a"} 16' in text
+    assert 'chaski_emitter_min_call_cost{emitter="a",kind="evaluate"} 16' in text
     for i in range(5):                            # every later item reserves >= 16; none fails
         due(conn, f"y{i}")
         start = r.runs["ok"]
@@ -105,19 +110,48 @@ def test_an_item_costing_more_than_call_requests_is_a_loud_configuration_error_n
     assert r.runs["ok"] == 6 and len(adapters.failed) == 1
 
 
-def test_an_item_costing_more_than_the_burst_is_never_called(tmp_path, monkeypatch):
+def test_an_item_costing_more_than_the_burst_retries_at_the_whole_burst_without_wedging(tmp_path, monkeypatch):
+    # Nothing can admit it, but an untyped failure can not prove that either: it is
+    # retried at the whole burst on the normal retry cadence, never above the burst.
     conn, budget, r, adapters = runner(tmp_path, monkeypatch, 41)
     budget.tokens, budget.updated = 40.0, 0.0
     due(conn, "x1")
-    r.tick(0.0)                                   # fails under 40: at least 41 needed
-    assert len(adapters.failed) == 1
-    for now in range(61, 400):
+    for now in range(0, 400):
         r.tick(float(now))
-    assert len(adapters.failed) == 1 and r.not_admitted.get("cost_exceeds_cap", 0) > 0
-    assert 'chaski_emitter_min_call_cost{emitter="a"} 41' in "\n".join(r.metrics(lambda s: s))
+    assert 1 < len(adapters.failed) <= 400 // 60 + 1, "one attempt per retry interval, no storm"
+    assert all(held == 40 for held, _ in adapters.failed)
+    assert r._min_cost["evaluate"] == 40 and r.runs["ok"] == 0
+    assert 'chaski_emitter_min_call_cost{emitter="a",kind="evaluate"} 0' in "\n".join(r.metrics(lambda s: s))
+
+
+@pytest.mark.parametrize("call_requests", [40, 15])
+def test_transient_one_item_failures_do_not_strand_the_kind(tmp_path, monkeypatch, caplog, call_requests):
+    # Review of #105: a Quipu 5xx or timeout on a one-item call exits nonzero just like
+    # cap exhaustion. It must not be read as "this item costs more than the burst".
+    conn, budget, r, adapters = runner(tmp_path, monkeypatch, 3, call_requests=call_requests,
+                                       transient=60)
+    budget.tokens, budget.updated = 40.0, 0.0
+    due(conn, "x1")
+    caplog.set_level(logging.WARNING, logger=inc.LOG.name)
+    now = 0.0
+    while adapters.transient and now < 60 * 200:
+        r.tick(now)
+        now += 1.0
+    assert adapters.transient == 0, "the kind kept being called through the outage"
+    assert r._min_cost["evaluate"] <= budget.burst
+    assert not any("CONFIGURATION ERROR" in m for m in caplog.messages)
+    assert 'chaski_emitter_min_call_cost{emitter="a",kind="evaluate"} 0' in "\n".join(r.metrics(lambda s: s))
+    while not r.runs["ok"] and now < 60 * 300:   # the outage ends: it recovers
+        r.tick(now)
+        now += 1.0
+    assert r.runs["ok"] == 1
+    assert r._min_cost["evaluate"] == r._measured_cost["evaluate"] == 3, "the measured cost replaces the hint"
+    assert not r.not_admitted.get("cost_exceeds_cap") or r._cap(now) >= 3
 
 
 def test_an_unmeasured_emitter_exports_zero(tmp_path, monkeypatch):
     conn, budget, r, adapters = runner(tmp_path, monkeypatch, 3)
     r._publish()
-    assert 'chaski_emitter_min_call_cost{emitter="a"} 0' in "\n".join(r.metrics(lambda s: s))
+    text = "\n".join(r.metrics(lambda s: s))
+    assert 'chaski_emitter_min_call_cost{emitter="a",kind="evaluate"} 0' in text
+    assert 'chaski_emitter_min_call_cost{emitter="a",kind="route"} 0' in text

@@ -156,6 +156,7 @@ class ChangeRunner(Runner):
     adapter_budget = None
     _waiting_since = None
     _min_cost: dict = {}      # rebound, never mutated, so the class default stays empty
+    _measured_cost: dict = {}  # rebound, never mutated, so the class default stays empty
     not_admitted: dict = {}   # rebound, never mutated, so the class default stays empty
     _started_at = 0.0
     # aegis-g68w.14: after this many consecutive live evaluations while reconcile
@@ -180,6 +181,8 @@ class ChangeRunner(Runner):
         # aegis-exe6.2: call kind -> measured cost of a ONE-item call. No call of
         # that kind reserves less, whatever the cap (else it fails and retries forever).
         self._min_cost = {}
+        # Only a one-item SUCCESS measures; a failure infers "at least" (see _call).
+        self._measured_cost = {}
         self._live_streak = 0     # consecutive live evaluations with reconcile work due
         # aegis-exe6.1: refusals were silent, so "0 crashes" read as healthy while no
         # emitter ran. Count them by reason, and remember when the current wait began.
@@ -300,16 +303,32 @@ class ChangeRunner(Runner):
             return reserve
         return max(reserve, min(c, self.request_budget.burst))
 
-    def _learn_min_cost(self, kind, cost, how):
-        prev = self._min_cost.get(kind)
+    def _learn_min_cost(self, kind, cost):
+        """A one-item success MEASURED the cost of one item of this kind."""
+        prev = self._measured_cost.get(kind)
         self._min_cost = {**self._min_cost, kind: cost}
+        self._measured_cost = {**self._measured_cost, kind: cost}
         if cost > self.call_requests and prev != cost:
-            LOG.error("incremental emitter %s CONFIGURATION ERROR: one %s item costs %s %d requests,"
+            LOG.error("incremental emitter %s CONFIGURATION ERROR: one %s item costs %d requests (measured),"
                       " more than call_requests=%d; it is reserved at %d, above the configured cap."
-                      " Raise call_requests (chaski_emitter_min_call_cost)%s",
-                      self.emitter.label, kind, how, cost, self.call_requests, cost,
-                      "; it exceeds the burst and can never be admitted"
-                      if cost > self.request_budget.burst else "")
+                      " Raise call_requests (chaski_emitter_min_call_cost)",
+                      self.emitter.label, kind, cost, self.call_requests, cost)
+
+    def _infer_min_cost(self, kind, reserve):
+        """A one-item call failed under a hard cap of `reserve`. The adapter's error
+        is untyped (a Quipu 5xx, a timeout and cap exhaustion all exit nonzero), so
+        this is only a hint that the item MAY need more: reserve one more next time.
+        It is clamped to the burst, so a run of transient failures can at worst make
+        the kind wait for a full bucket; it can never strand it. It is not a
+        configuration error and is not exported: only a measured cost is."""
+        floor = min(reserve + 1, self.request_budget.burst)
+        if floor <= self._min_cost.get(kind, 0):
+            return
+        self._min_cost = {**self._min_cost, kind: floor}
+        LOG.warning("incremental emitter %s: a one-item %s call failed under a cap of %d;"
+                    " the next one reserves at least %d%s", self.emitter.label, kind, reserve, floor,
+                    " (the whole burst: if it still fails, one item needs more than the burst)"
+                    if floor == self.request_budget.burst else "")
 
     def _call(self, cls, request, now, kind="evaluate"):
         """One adapter call, pre-reserved against the global budget when it exists."""
@@ -321,12 +340,9 @@ class ChangeRunner(Runner):
         reserve = self._reservation(kind, units, now)
         starved = self._starved(now)
         c = self._min_cost.get(kind)
-        if c is not None and c > rb.burst:
-            reason = "cost_exceeds_cap"   # one item needs more than the bucket can ever hold
-        else:
-            reason = rb.reserve(cls, reserve, now, starved=starved)
-            if reason == "tokens" and c is not None and c > self._cap(now):
-                reason = "cost_exceeds_cap"   # waiting for tokens >= c, not calling and failing
+        reason = rb.reserve(cls, reserve, now, starved=starved)
+        if reason == "tokens" and c is not None and c > self._cap(now):
+            reason = "cost_exceeds_cap"   # waiting for tokens >= c, not calling and failing
         if reason is not None:
             self.not_admitted = {**self.not_admitted, reason: self.not_admitted.get(reason, 0) + 1}
             if self._waiting_since is None:
@@ -347,11 +363,10 @@ class ChangeRunner(Runner):
         except Exception:
             rb.adapter_accounting_unknown()
             self._kind_cost.pop(kind, None)   # the next call of this kind reserves the full cap
-            if units == 1 and reserve + 1 > self._min_cost.get(kind, 0):
-                # A one-item call that failed under a hard cap of `reserve` is the only
-                # cost evidence a failure gives: if it was the cap, the item needs more.
-                # A later one-item success replaces this with the measured cost.
-                self._learn_min_cost(kind, reserve + 1, "at least")
+            if units == 1:
+                # The only cost evidence a failure gives, and an ambiguous one; a later
+                # one-item success replaces it with the measured cost.
+                self._infer_min_cost(kind, reserve)
             raise
         before = rb.violations.get(self.emitter.label, 0)
         self._last_cost = rb.settle(reserve, out.get("cost"), self.emitter.label)
@@ -361,7 +376,7 @@ class ChangeRunner(Runner):
         prev = self._kind_cost.get(kind)
         self._kind_cost[kind] = self._last_cost if prev is None else 0.7 * prev + 0.3 * self._last_cost
         if units == 1:
-            self._learn_min_cost(kind, max(1, self._last_cost), "measured")
+            self._learn_min_cost(kind, max(1, self._last_cost))
         return out
 
     def reconcile(self, now):
@@ -568,7 +583,7 @@ class ChangeRunner(Runner):
                                       (self.emitter.label,)).fetchone()
         snap.update(change_pending=pending, deadlines=count, next_due=due or 0,
                     not_admitted=dict(self.not_admitted), started_at=self._started_at,
-                    min_call_cost=max(self._min_cost.values(), default=0))
+                    min_call_cost=dict(self._measured_cost))
         return snap
 
     def metrics(self, esc):
@@ -584,8 +599,11 @@ class ChangeRunner(Runner):
             for reason in ("priority", "tokens", "cost_exceeds_cap"):
                 lines.append(f'chaski_emitter_not_admitted_total{{emitter="{label}",reason="{reason}"}} '
                              f'{s.get("not_admitted", {}).get(reason, 0)}')
-            # aegis-exe6.2: above call_requests is a configuration error (0 = unmeasured).
-            lines.append(f'chaski_emitter_min_call_cost{{emitter="{label}"}} {s.get("min_call_cost", 0)}')
+            # aegis-exe6.2: the measured cost of one item, per call kind; above
+            # call_requests is a configuration error (0 = unmeasured).
+            for kind in ("evaluate", "route"):
+                lines.append(f'chaski_emitter_min_call_cost{{emitter="{label}",kind="{kind}"}} '
+                             f'{s.get("min_call_cost", {}).get(kind, 0)}')
             since = s["last_success"] or s.get("started_at") or time.time()
             lines.append(f'chaski_emitter_last_run_age_seconds{{emitter="{label}"}} '
                          f'{max(0.0, time.time() - since):.0f}')
