@@ -24,6 +24,9 @@ item_prefixes: [aegis]
 skip_authors: []
 skip_branch_prefixes: [release-please--]
 max_prs_per_repo: 30
+# A verdict carries to a new head that only merged the base branch in
+# (Stiwi 2026-11-28: no re-review when main changes). docs/pr-lifecycle.md.
+carry_verdicts_over_base_merges: true
 gh: [gh]
 timeout_s: 60
 # --- emitter ---

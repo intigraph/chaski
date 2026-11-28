@@ -59,7 +59,22 @@ commit by a trusted login other than the PR author, or a comment by a
 `verdict_logins` login whose first line is `APPROVE at head <40-hex>` or
 `REQUEST CHANGES at head <40-hex>`, which is how crew review jobs record their
 verdicts under the shared operator login. A verdict for an older head does
-not count.
+not count, except across a main sync (below).
+
+**Main moving does not re-arm review.** Stiwi 2026-11-28: "Stop re reviewing
+things, even when main change[s]". A verdict on an earlier PR commit still
+counts for the head when every commit from it to the head, along the first
+parent, is a merge commit whose other parents are not in the PR's own commit
+list. GitHub lists every commit reachable from the head and not from the
+base, so a parent outside that list is already on the base branch: the merge
+only brought main in (GitHub's "Update branch"). An APPROVE therefore still
+leads to `merge` once the new head's required checks are green, and a
+REQUEST CHANGES still leads to `task`. A fresh review is still needed for:
+an ordinary commit after the verdict, merging another branch whose commits
+are in the PR, a rebase or force-push (the reviewed commit is gone), a commit
+list over 100 or a parent list over 5 (unknown), or
+`carry_verdicts_over_base_merges: false`. Edits made while resolving a merge
+conflict are not seen; the head's required checks still gate the merge.
 
 **Independence rests on the merge job.** Crew share one operator login, so
 the PR author and a `verdict_logins` reviewer are the same GitHub login. This
@@ -97,7 +112,8 @@ red. CANCELLED and STALE are neither red nor green.
 ## Cost
 
 Two GraphQL calls per run for up to 20 non-draft PRs (one more per further
-20): an open-PR list across all repos, then head checks, reviews and comments.
+20): an open-PR list across all repos, then head checks, the PR's commit list
+(last 100, with parents), reviews and comments.
 At PT2M that is about 60 calls an hour, far below the 5000 an hour limit.
 It uses the `gh` login of the chaski runner.
 

@@ -35,6 +35,13 @@ configured `verdict_logins` login whose first line is
 `APPROVE at head <40-hex>` or `REQUEST CHANGES at head <40-hex>`. Crew share
 one operator login, so the comment form is how crew reviews are recorded;
 the merge job re-verifies independence and the head before merging.
+
+Main moving does not re-arm review (Stiwi 2026-11-28, "Stop re reviewing
+things, even when main change[s]"): a verdict on an earlier PR commit still
+counts for the head when every commit from it to the head is a merge commit
+that only brings in base-branch commits ("Update branch"). That is judged
+from the PR's complete commit list; a truncated list, a rebase or a real
+commit after the verdict needs a fresh review as before.
 """
 from __future__ import annotations
 
@@ -82,6 +89,7 @@ class Config:
     max_prs_per_repo: int = 30
     gh: tuple[str, ...] = ("gh",)
     timeout_s: int = 60
+    carry_verdicts_over_base_merges: bool = True
     item_re: re.Pattern = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -116,6 +124,9 @@ def load_config(path: Path | str) -> Config:
     assoc = strings("trusted_associations", TRUSTED_ASSOCIATIONS)
     if not all(a in ASSOCIATIONS for a in assoc):
         raise ConfigError(f"trusted_associations must be GitHub author associations: {sorted(ASSOCIATIONS)}")
+    carry = doc.get("carry_verdicts_over_base_merges", True)
+    if type(carry) is not bool:
+        raise ConfigError("carry_verdicts_over_base_merges must be true or false")
     gh = doc.get("gh", ["gh"])
     gh = [gh] if isinstance(gh, str) else gh
     if not isinstance(gh, list) or not gh or not all(isinstance(s, str) and s for s in gh):
@@ -124,7 +135,8 @@ def load_config(path: Path | str) -> Config:
                   trusted_associations=frozenset(assoc), trusted_logins=frozenset(strings("trusted_logins")),
                   item_prefixes=tuple(prefixes), skip_authors=frozenset(strings("skip_authors")),
                   skip_branch_prefixes=tuple(strings("skip_branch_prefixes", ("release-please--",))),
-                  max_prs_per_repo=n, gh=tuple(gh), timeout_s=t)
+                  max_prs_per_repo=n, gh=tuple(gh), timeout_s=t,
+                  carry_verdicts_over_base_merges=carry)
 
 
 # ---------------------------------------------------------------- judgement
@@ -159,16 +171,49 @@ def skipped(cfg: Config, pr: dict) -> bool:
                 or any((pr.get("head_ref") or "").startswith(p) for p in cfg.skip_branch_prefixes))
 
 
+def verdict_commits(cfg: Config, pr: dict) -> frozenset[str]:
+    """The commits whose verdicts count for the head: the head, plus each
+    earlier PR commit reached from it through merge commits that only bring in
+    base-branch commits (main moved; the PR's own change did not).
+
+    Needs the PR's complete commit list (`commits`, oldest first, each with
+    `oid` and `parents`; `commits_complete`). A merge parent outside that list
+    is on the base branch, because GitHub lists every commit reachable from the
+    head and not from the base. A merge parent inside the list (another branch
+    merged into the PR) is new code and stops the walk, as does any ordinary
+    commit, a list that does not end at the head, or a truncated list.
+    """
+    head = pr["head"]
+    commits = pr.get("commits")
+    if (not cfg.carry_verdicts_over_base_merges or not pr.get("commits_complete")
+            or not isinstance(commits, list) or not commits or commits[-1].get("oid") != head):
+        return frozenset({head})
+    parents = {c.get("oid"): c.get("parents") for c in commits}
+    out, cur = {head}, head
+    while True:
+        ps = parents.get(cur)
+        if not isinstance(ps, list) or len(ps) < 2:
+            break  # an ordinary commit (or unknown parents): the PR changed here
+        first, others = ps[0], ps[1:]
+        if first not in parents or any(o in parents for o in others):
+            break  # not a base-only merge on the PR's first-parent line
+        out.add(first)
+        cur = first
+    return frozenset(out)
+
+
 def head_verdicts(cfg: Config, pr: dict) -> list[str] | None:
-    """Chronological verdicts ('approve'/'changes') on the current head, or None
-    when the review/comment lists were truncated (unknown)."""
+    """Chronological verdicts ('approve'/'changes') that count for the current
+    head (see verdict_commits), or None when the review/comment lists were
+    truncated (unknown)."""
     if not pr.get("reviews_complete") or not pr.get("comments_complete"):
         return None
-    head, author = pr["head"], pr.get("author")
+    author = pr.get("author")
+    counted = verdict_commits(cfg, pr)
     timed = []
     for r in pr.get("reviews", []):
         state = r.get("state")
-        if (r.get("commit") == head and r.get("author") and r["author"] != author
+        if (r.get("commit") in counted and r.get("author") and r["author"] != author
                 and trusted(cfg, r["author"], r.get("association"))
                 and state in ("APPROVED", "CHANGES_REQUESTED")):
             timed.append((r.get("at") or "", "approve" if state == "APPROVED" else "changes"))
@@ -176,7 +221,7 @@ def head_verdicts(cfg: Config, pr: dict) -> list[str] | None:
         if c.get("author") not in cfg.verdict_logins:
             continue
         m = VERDICT_LINE.match(c.get("body") or "")
-        if m and m.group(2).lower() == head:
+        if m and m.group(2).lower() in counted:
             timed.append((c.get("at") or "", "approve" if m.group(1).upper() == "APPROVE" else "changes"))
     return [v for _, v in sorted(timed, key=lambda t: t[0])]
 
@@ -291,6 +336,8 @@ _DETAIL = """
    nodes { __typename
      ... on CheckRun { name status conclusion startedAt isRequired(pullRequestNumber: %(n)d) }
      ... on StatusContext { context state createdAt isRequired(pullRequestNumber: %(n)d) } } } } } } }
+ chain: commits(last: 100) { pageInfo { hasPreviousPage }
+   nodes { commit { oid parents(first: 5) { totalCount nodes { oid } } } } }
  reviews(last: 100) { pageInfo { hasPreviousPage }
    nodes { state submittedAt authorAssociation author { login } commit { oid } } }
  comments(last: 100) { pageInfo { hasPreviousPage }
@@ -320,6 +367,22 @@ def latest_per_name(contexts: list[dict]) -> list[dict]:
         elif c.get("required"):
             prior["required"] = True
     return list(best.values())
+
+
+def _chain(chain: dict | None) -> dict:
+    """The PR's commit list, oldest first, for verdict_commits. Incomplete when
+    GitHub truncated it or a commit's parent list was cut off."""
+    if not isinstance(chain, dict):
+        return {"commits": None, "commits_complete": False}
+    commits, complete = [], not chain["pageInfo"]["hasPreviousPage"]
+    for n in chain["nodes"]:
+        c = n.get("commit") or {}
+        ps = c.get("parents") or {}
+        oids = [p.get("oid") for p in ps.get("nodes") or []]
+        if ps.get("totalCount") != len(oids):
+            complete = False
+        commits.append({"oid": c.get("oid"), "parents": oids})
+    return {"commits": commits, "commits_complete": complete}
 
 
 def add_details(cfg: Config, prs: list[dict]) -> list[dict]:
@@ -357,7 +420,8 @@ def add_details(cfg: Config, prs: list[dict]) -> list[dict]:
                         "reviews_complete": not node["reviews"]["pageInfo"]["hasPreviousPage"],
                         "comments": [{"author": (c.get("author") or {}).get("login"), "at": c.get("createdAt"),
                                       "body": (c.get("body") or "")[:400]} for c in node["comments"]["nodes"]],
-                        "comments_complete": not node["comments"]["pageInfo"]["hasPreviousPage"]})
+                        "comments_complete": not node["comments"]["pageInfo"]["hasPreviousPage"],
+                        **_chain(node.get("chain"))})
     return out
 
 

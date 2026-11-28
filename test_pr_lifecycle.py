@@ -220,6 +220,10 @@ def test_config_validation(tmp_path):
     cfg = pl.load_config(c)
     assert "intigraph/quipu" in cfg.repos and "scbrown" in cfg.verdict_logins
     assert cfg.trusted_associations == {"OWNER", "MEMBER", "COLLABORATOR"}
+    assert cfg.carry_verdicts_over_base_merges is True
+    c.write_text("repos: [intigraph/quipu]\ncarry_verdicts_over_base_merges: \"yes\"\n")
+    with pytest.raises(pl.ConfigError):
+        pl.load_config(c)
     c.write_text("repos: [not a repo]\n")
     with pytest.raises(pl.ConfigError):
         pl.load_config(c)
@@ -282,3 +286,81 @@ def test_add_details_reports_stalled_pr(monkeypatch, capsys):
     out = pl.add_details(CFG, [pr()])
     assert out[0]["reviews_complete"] is False and jobs(out[0]) == []
     assert "intigraph/quipu#1354: more than 100 reviews or comments" in capsys.readouterr().err
+
+
+# --- main moving does not re-arm review (Stiwi 2026-11-28) -----------------
+
+C1, M1, M2, X1 = "c" * 40, "d" * 40, "e" * 40, "f" * 40
+MAIN1, MAIN2 = "1" * 40, "2" * 40
+
+
+def synced(head, commits, **kw):
+    return pr(head=head, head_ref_oid=head, commits=commits, commits_complete=True, **kw)
+
+
+def test_update_branch_merge_keeps_the_approval_and_merges():
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": M1, "parents": [C1, MAIN2]}]
+    p = synced(M1, commits, comments=[verdict("APPROVE", C1)])
+    assert pl.verdict_commits(CFG, p) == {M1, C1}
+    assert jobs(p) == [("merge", "green-and-approved")]
+
+
+def test_repeated_base_merges_keep_request_changes_too():
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": M1, "parents": [C1, MAIN1]},
+               {"oid": M2, "parents": [M1, MAIN2]}]
+    p = synced(M2, commits, comments=[verdict("REQUEST CHANGES", C1)])
+    assert jobs(p) == [("task", "changes-requested")]
+
+
+def test_a_real_commit_after_the_verdict_still_needs_review():
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": M1, "parents": [C1, MAIN2]},
+               {"oid": X1, "parents": [M1]}]
+    p = synced(X1, commits, comments=[verdict("APPROVE", C1)])
+    assert pl.verdict_commits(CFG, p) == {X1}
+    assert jobs(p) == [("review", "new-head-unreviewed")]
+
+
+def test_merging_another_pr_branch_is_new_code():
+    # X1 is in the PR's own commit list, so M1 brings in non-base commits.
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": X1, "parents": [MAIN1]},
+               {"oid": M1, "parents": [C1, X1]}]
+    p = synced(M1, commits, comments=[verdict("APPROVE", C1)])
+    assert jobs(p) == [("review", "new-head-unreviewed")]
+
+
+def test_no_carry_without_the_complete_commit_list_or_when_disabled():
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": M1, "parents": [C1, MAIN2]}]
+    truncated = synced(M1, commits, comments=[verdict("APPROVE", C1)])
+    truncated["commits_complete"] = False
+    assert jobs(truncated) == [("review", "new-head-unreviewed")]
+    off = pl.Config(repos=CFG.repos, verdict_logins=CFG.verdict_logins,
+                    carry_verdicts_over_base_merges=False)
+    assert jobs(synced(M1, commits, comments=[verdict("APPROVE", C1)]), off) == [
+        ("review", "new-head-unreviewed")]
+    # A rebase replaces the reviewed commit: it is not in the list, no carry.
+    rebased = synced(X1, [{"oid": X1, "parents": [MAIN2]}], comments=[verdict("APPROVE", C1)])
+    assert jobs(rebased) == [("review", "new-head-unreviewed")]
+
+
+def test_github_review_on_the_pre_merge_commit_carries():
+    commits = [{"oid": C1, "parents": [MAIN1]}, {"oid": M1, "parents": [C1, MAIN2]}]
+    review = {"state": "APPROVED", "at": "t", "author": "alice", "association": "MEMBER", "commit": C1}
+    assert jobs(synced(M1, commits, reviews=[review])) == [("merge", "green-and-approved")]
+
+
+def test_add_details_reads_the_commit_chain(monkeypatch):
+    def commit(oid, parents, total=None):
+        return {"commit": {"oid": oid, "parents": {"totalCount": len(parents) if total is None else total,
+                                                    "nodes": [{"oid": o} for o in parents]}}}
+    node = {"commits": {"nodes": [{"commit": {"oid": M1, "statusCheckRollup": None}}]},
+            "chain": {"pageInfo": {"hasPreviousPage": False},
+                      "nodes": [commit(C1, [MAIN1]), commit(M1, [C1, MAIN2])]},
+            "reviews": {"pageInfo": {"hasPreviousPage": False}, "nodes": []},
+            "comments": {"pageInfo": {"hasPreviousPage": False}, "nodes": [
+                {"createdAt": "t", "author": {"login": "scbrown"}, "body": f"APPROVE at head {C1}"}]}}
+    monkeypatch.setattr(pl, "_graphql", lambda cfg, q: {"p0": {"pullRequest": node}})
+    [out] = pl.add_details(CFG, [pr(head_ref_oid=M1)])
+    assert out["commits_complete"] is True and pl.head_verdicts(CFG, out) == ["approve"]
+    node["chain"]["nodes"][1] = commit(M1, [C1, MAIN2], total=6)  # parent list cut off
+    [out] = pl.add_details(CFG, [pr(head_ref_oid=M1)])
+    assert out["commits_complete"] is False and pl.head_verdicts(CFG, out) == []
