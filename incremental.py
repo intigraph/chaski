@@ -155,6 +155,8 @@ class ChangeRunner(Runner):
     cost_per_item = None
     adapter_budget = None
     _waiting_since = None
+    _min_cost: dict = {}      # rebound, never mutated, so the class default stays empty
+    _measured_cost: dict = {}  # rebound, never mutated, so the class default stays empty
     not_admitted: dict = {}   # rebound, never mutated, so the class default stays empty
     _started_at = 0.0
     # aegis-g68w.14: after this many consecutive live evaluations while reconcile
@@ -176,6 +178,11 @@ class ChangeRunner(Runner):
         self.batch = BATCH
         self.cost_per_item = None
         self._kind_cost = {}      # call kind -> EWMA of the settled request cost
+        # aegis-exe6.2: call kind -> measured cost of a ONE-item call. No call of
+        # that kind reserves less, whatever the cap (else it fails and retries forever).
+        self._min_cost = {}
+        # Only a one-item SUCCESS measures; a failure infers "at least" (see _call).
+        self._measured_cost = {}
         self._live_streak = 0     # consecutive live evaluations with reconcile work due
         # aegis-exe6.1: refusals were silent, so "0 crashes" read as healthy while no
         # emitter ran. Count them by reason, and remember when the current wait began.
@@ -257,6 +264,8 @@ class ChangeRunner(Runner):
         if self._starved(now):
             return 1
         cap = self._cap(now)
+        if self._min_cost.get(kind, 0) >= cap:
+            return 1   # one item already needs the whole cap (aegis-exe6.2)
         if kind == "evaluate" and self.cost_per_item is not None:
             return max(1, min(base, int(cap * 0.8 // self.cost_per_item)))
         if self._kind_cost.get(kind) is None and cap < self.call_requests:
@@ -273,6 +282,9 @@ class ChangeRunner(Runner):
         Reserving the full cap for every call held ~2.6x the tokens actually spent
         and starved the drain behind them. An evaluation scales with its batch,
         which _adapt_batch grows, so it reserves per item for the batch it sends."""
+        return self._floored(kind, self._estimate(kind, items, now))
+
+    def _estimate(self, kind, items, now):
         cap = self._cap(now)
         if kind == "evaluate" and items and self.cost_per_item is not None and kind in self._kind_cost:
             return max(1, min(cap, math.ceil(self.cost_per_item * items * 1.25)))
@@ -281,14 +293,56 @@ class ChangeRunner(Runner):
             return cap
         return max(1, min(cap, math.ceil(ewma * 1.25)))
 
+    def _floored(self, kind, reserve):
+        """aegis-exe6.2: never reserve below a measured one-item cost. The cap
+        bounds what a call is SIZED to; it can not make one item cheaper, and a
+        call capped below its item's cost fails on every retry (a livelock that
+        burns its reservation each time). Clamped to the burst for due()."""
+        c = self._min_cost.get(kind)
+        if c is None:
+            return reserve
+        return max(reserve, min(c, self.request_budget.burst))
+
+    def _learn_min_cost(self, kind, cost):
+        """A one-item success MEASURED the cost of one item of this kind."""
+        prev = self._measured_cost.get(kind)
+        self._min_cost = {**self._min_cost, kind: cost}
+        self._measured_cost = {**self._measured_cost, kind: cost}
+        if cost > self.call_requests and prev != cost:
+            LOG.error("incremental emitter %s CONFIGURATION ERROR: one %s item costs %d requests (measured),"
+                      " more than call_requests=%d; it is reserved at %d, above the configured cap."
+                      " Raise call_requests (chaski_emitter_min_call_cost)",
+                      self.emitter.label, kind, cost, self.call_requests, cost)
+
+    def _infer_min_cost(self, kind, reserve):
+        """A one-item call failed under a hard cap of `reserve`. The adapter's error
+        is untyped (a Quipu 5xx, a timeout and cap exhaustion all exit nonzero), so
+        this is only a hint that the item MAY need more: reserve one more next time.
+        It is clamped to the burst, so a run of transient failures can at worst make
+        the kind wait for a full bucket; it can never strand it. It is not a
+        configuration error and is not exported: only a measured cost is."""
+        floor = min(reserve + 1, self.request_budget.burst)
+        if floor <= self._min_cost.get(kind, 0):
+            return
+        self._min_cost = {**self._min_cost, kind: floor}
+        LOG.warning("incremental emitter %s: a one-item %s call failed under a cap of %d;"
+                    " the next one reserves at least %d%s", self.emitter.label, kind, reserve, floor,
+                    " (the whole burst: if it still fails, one item needs more than the burst)"
+                    if floor == self.request_budget.burst else "")
+
     def _call(self, cls, request, now, kind="evaluate"):
         """One adapter call, pre-reserved against the global budget when it exists."""
         rb = self.request_budget
         if rb is None:
             return call(self.emitter, request)
-        reserve = self._reservation(kind, len(request.get("items") or ()), now)
+        units = len(request.get("items") or ()) or len(
+            {c.get("entity") for c in request.get("route") or () if isinstance(c, dict)})
+        reserve = self._reservation(kind, units, now)
         starved = self._starved(now)
+        c = self._min_cost.get(kind)
         reason = rb.reserve(cls, reserve, now, starved=starved)
+        if reason == "tokens" and c is not None and c > self._cap(now):
+            reason = "cost_exceeds_cap"   # waiting for tokens >= c, not calling and failing
         if reason is not None:
             self.not_admitted = {**self.not_admitted, reason: self.not_admitted.get(reason, 0) + 1}
             if self._waiting_since is None:
@@ -309,6 +363,10 @@ class ChangeRunner(Runner):
         except Exception:
             rb.adapter_accounting_unknown()
             self._kind_cost.pop(kind, None)   # the next call of this kind reserves the full cap
+            if units == 1:
+                # The only cost evidence a failure gives, and an ambiguous one; a later
+                # one-item success replaces it with the measured cost.
+                self._infer_min_cost(kind, reserve)
             raise
         before = rb.violations.get(self.emitter.label, 0)
         self._last_cost = rb.settle(reserve, out.get("cost"), self.emitter.label)
@@ -317,6 +375,8 @@ class ChangeRunner(Runner):
             raise ProtocolError(f"emitter {self.emitter.label} broke its request-cost contract; suspended")
         prev = self._kind_cost.get(kind)
         self._kind_cost[kind] = self._last_cost if prev is None else 0.7 * prev + 0.3 * self._last_cost
+        if units == 1:
+            self._learn_min_cost(kind, max(1, self._last_cost))
         return out
 
     def reconcile(self, now):
@@ -522,7 +582,8 @@ class ChangeRunner(Runner):
         count, due = self.conn.execute("SELECT COUNT(*), MIN(due) FROM adapter_deadlines WHERE emitter=?",
                                       (self.emitter.label,)).fetchone()
         snap.update(change_pending=pending, deadlines=count, next_due=due or 0,
-                    not_admitted=dict(self.not_admitted), started_at=self._started_at)
+                    not_admitted=dict(self.not_admitted), started_at=self._started_at,
+                    min_call_cost=dict(self._measured_cost))
         return snap
 
     def metrics(self, esc):
@@ -535,9 +596,14 @@ class ChangeRunner(Runner):
         if self.request_budget is not None:
             label = esc(self.emitter.label)
             # aegis-exe6.1: refusals are not failures, but they are not health either.
-            for reason in ("priority", "tokens"):
+            for reason in ("priority", "tokens", "cost_exceeds_cap"):
                 lines.append(f'chaski_emitter_not_admitted_total{{emitter="{label}",reason="{reason}"}} '
                              f'{s.get("not_admitted", {}).get(reason, 0)}')
+            # aegis-exe6.2: the measured cost of one item, per call kind; above
+            # call_requests is a configuration error (0 = unmeasured).
+            for kind in ("evaluate", "route"):
+                lines.append(f'chaski_emitter_min_call_cost{{emitter="{label}",kind="{kind}"}} '
+                             f'{s.get("min_call_cost", {}).get(kind, 0)}')
             since = s["last_success"] or s.get("started_at") or time.time()
             lines.append(f'chaski_emitter_last_run_age_seconds{{emitter="{label}"}} '
                          f'{max(0.0, time.time() - since):.0f}')
