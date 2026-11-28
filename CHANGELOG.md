@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.11.0](https://github.com/intigraph/chaski/compare/v0.10.0...v0.11.0) (2026-11-28)
+
+
+### Features
+
+* **emitter:** reviewed expiry of stale attempted/bound scheduled firings (aegis-se8) ([3de7655](https://github.com/intigraph/chaski/commit/3de76551e199ea0e216e9ac5e15a60f2c8fd8a16))
+* **emitter:** reviewed expiry of stale attempted/bound scheduled firings (aegis-se8) ([c03ae80](https://github.com/intigraph/chaski/commit/c03ae809663e11a62c504bcabafbeacdbfa7f703))
+* **github-notify:** push outside public-repo activity to ntfy once; crew/bot to digest (aegis-za4f.7) ([#95](https://github.com/intigraph/chaski/issues/95)) ([f8b6d74](https://github.com/intigraph/chaski/commit/f8b6d74965f14834e24eb69fda528c47f81e1668))
+* **github-watch:** one draft job per unanswered outside thread (aegis-za4f.7) ([#103](https://github.com/intigraph/chaski/issues/103)) ([eaf53ed](https://github.com/intigraph/chaski/commit/eaf53ed3e3292a685a5ec12b40e81ff163915f92))
+* **github-work:** record event-to-spawn latency on dispatch; test the real st spawner (aegis-dja) ([e018096](https://github.com/intigraph/chaski/commit/e018096c3af11d61314cd9abfa25034d51555a02))
+* **github-work:** record event-to-spawn latency; test the real st spawner (aegis-dja) ([f87f7f4](https://github.com/intigraph/chaski/commit/f87f7f47a8e00ffbe9e2ec0cecf48b4a44c9b389))
+* **main-red:** recruit one triage task per red default-branch sha; remove the stub spawner (aegis-dja) ([#101](https://github.com/intigraph/chaski/issues/101)) ([769665d](https://github.com/intigraph/chaski/commit/769665d290fffcbd8bcf3bacfa32955a5eef6eb1))
+* **pr-lifecycle:** recruit review/fix/merge jobs from PR state (aegis-za4f.21) ([170e835](https://github.com/intigraph/chaski/commit/170e8358eddd0b76eedb126e10c4d878fe971ce5))
+* **pr-lifecycle:** recruit review/fix/merge jobs from PR state (aegis-za4f.21) ([b6c2aac](https://github.com/intigraph/chaski/commit/b6c2aacc48835349ae5d85cf7109111d97969ca3))
+
+
+### Bug Fixes
+
+* **budget:** cap reservations at the attainable bucket; emitter starvation guard; count NotAdmitted (aegis-exe6.1) ([#104](https://github.com/intigraph/chaski/issues/104)) ([2d91113](https://github.com/intigraph/chaski/commit/2d91113ca848ad60af02e2acc3b14df02f1082c9))
+* **budget:** reserve a measured one-item cost and wait; a transient failure can not strand a kind (aegis-exe6.2) ([#106](https://github.com/intigraph/chaski/issues/106)) ([683c506](https://github.com/intigraph/chaski/commit/683c5063b12de1b359dd96dc83cd1e2d754bd7b6))
+* **main-red:** red_at is when the failed check completed, not when it started ([#102](https://github.com/intigraph/chaski/issues/102)) ([af7d57e](https://github.com/intigraph/chaski/commit/af7d57e5f7fec5864e2f2158beaf5fd5f4eb344c))
+* **packaging:** ship reconcile.py, and fail the wheel smoke on any unshipped local import ([0b2da59](https://github.com/intigraph/chaski/commit/0b2da59108d03ec1bd6fb41ca4b9a92a99f4d2d5))
+* **packaging:** ship reconcile.py, and fail the wheel smoke on any unshipped local import (aegis-d2q0) ([938f84f](https://github.com/intigraph/chaski/commit/938f84f651ded29d45e794558d7159a9af63dbd7))
+* **pr-lifecycle:** a main sync keeps the verdict; no re-review when main moves (aegis-za4f.21) ([#108](https://github.com/intigraph/chaski/issues/108)) ([8837fb6](https://github.com/intigraph/chaski/commit/8837fb676857f2a03f63030ccfd462a279ef96ba))
+* **pr-lifecycle:** add --version, report truncated PR lists and stalled PRs (aegis-za4f.21) ([fa3a023](https://github.com/intigraph/chaski/commit/fa3a0231f262d2b452af5d9644a80dd0ac242a2e))
+* **pr-lifecycle:** only trusted GitHub input recruits jobs (aegis-za4f.21) ([23416f8](https://github.com/intigraph/chaski/commit/23416f819f6f448580a9cf651d7b038f7cc5fc2c))
+* **scheduled-expiry:** apply takes custody for a stream-mode consumer without a cursor file (aegis-se8) ([b69ecee](https://github.com/intigraph/chaski/commit/b69eceea90ae5746dd40b8cf71825bf431d64545))
+* **scheduled-expiry:** apply takes custody for a stream-mode consumer without a cursor file (aegis-se8) ([2e3925b](https://github.com/intigraph/chaski/commit/2e3925b01c345090acf2e6c6aef679d3cd0c1336))
+* **scheduled:** a delivery TTL keeps stale retries from starving the newest slot (aegis-se8) ([1c302e7](https://github.com/intigraph/chaski/commit/1c302e7956557b91079f1481474dd3322f6a2c91))
+* **scheduled:** a delivery TTL keeps stale retries from starving the newest slot (aegis-se8) ([59bc168](https://github.com/intigraph/chaski/commit/59bc168ab1cbf375c1bf88c0ba91dd6f9fc947bb))
+* **share:** surface the failing tool's stderr when a publish command fails ([#90](https://github.com/intigraph/chaski/issues/90)) ([692eb0c](https://github.com/intigraph/chaski/commit/692eb0cbf1f5eae739bdac8ce8a0e1100771048d))
+
+
+### Reverts
+
+* count route calls in the bounded reconcile share ([#89](https://github.com/intigraph/chaski/issues/89)) ([6ec9059](https://github.com/intigraph/chaski/commit/6ec905956723f3d16034e0e87cff08a58750e87a))
+* count route calls in the bounded reconcile share ([#89](https://github.com/intigraph/chaski/issues/89)) ([e06ffa9](https://github.com/intigraph/chaski/commit/e06ffa998cc243ac53b3c8f2749d789a4653aef3))
+
+
+### Documentation
+
+* point the stack table at the intigraph organization ([#107](https://github.com/intigraph/chaski/issues/107)) ([201c965](https://github.com/intigraph/chaski/commit/201c9656b00d67a78e40d9a4916d9fc7bb5f1a90))
+
 ## [0.10.0](https://github.com/intigraph/chaski/compare/v0.9.0...v0.10.0) (2026-11-26)
 
 
