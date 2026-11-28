@@ -40,8 +40,20 @@ Main moving does not re-arm review (Stiwi 2026-11-28, "Stop re reviewing
 things, even when main change[s]"): a verdict on an earlier PR commit still
 counts for the head when every commit from it to the head is a merge commit
 that only brings in base-branch commits ("Update branch"). That is judged
-from the PR's complete commit list; a truncated list, a rebase or a real
-commit after the verdict needs a fresh review as before.
+from the PR's complete commit list. A REQUEST CHANGES carries on that shape
+alone (carrying a block is the safe direction). An APPROVE carries only
+across a merge proved clean: its tree equals `git merge-tree --write-tree` of
+its two parents with no conflict, so a conflict resolution or any extra edit
+in the merge is new code and needs a review. A truncated list, a rebase, a
+real commit after the verdict or an unprovable merge needs a fresh review.
+
+Review policy comes from Quipu (Stiwi 2026-11-28): the stored query
+`repo_review_mode`, the same one st's merge gate reads, is asked once per run
+per repo. A repo whose mode is "none" never gets a review: a green non-draft
+head merges (reason `green-and-approved`, the approval being waived by
+policy, which st's merge gate re-applies) and a red head or a standing
+REQUEST CHANGES gets a fix task. Any other answer, or an unreadable one, keeps
+the review-required behaviour.
 """
 from __future__ import annotations
 
@@ -49,9 +61,12 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +86,9 @@ TRUSTED_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR",
                 "FIRST_TIMER", "MANNEQUIN", "NONE"}
 MAX_BATCH = 20
+REVIEW_MODE_QUERY = "repo_review_mode"
+REVIEW_MODE_LIMIT = 8
+URL_RE = re.compile(r"https?://[^\s]+")
 
 
 class ConfigError(ValueError):
@@ -90,6 +108,9 @@ class Config:
     gh: tuple[str, ...] = ("gh",)
     timeout_s: int = 60
     carry_verdicts_over_base_merges: bool = True
+    quipu_url: str | None = None
+    git_cache: str | None = None
+    git: tuple[str, ...] = ("git",)
     item_re: re.Pattern = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -127,16 +148,26 @@ def load_config(path: Path | str) -> Config:
     carry = doc.get("carry_verdicts_over_base_merges", True)
     if type(carry) is not bool:
         raise ConfigError("carry_verdicts_over_base_merges must be true or false")
-    gh = doc.get("gh", ["gh"])
-    gh = [gh] if isinstance(gh, str) else gh
-    if not isinstance(gh, list) or not gh or not all(isinstance(s, str) and s for s in gh):
-        raise ConfigError("gh must be a command (string or argv list)")
+    def command(key, default):
+        v = doc.get(key, [default])
+        v = [v] if isinstance(v, str) else v
+        if not isinstance(v, list) or not v or not all(isinstance(s, str) and s for s in v):
+            raise ConfigError(f"{key} must be a command (string or argv list)")
+        return tuple(v)
+
+    gh, git = command("gh", "gh"), command("git", "git")
+    quipu = doc.get("quipu_url")
+    if quipu is not None and not (isinstance(quipu, str) and URL_RE.fullmatch(quipu)):
+        raise ConfigError("quipu_url must be an http(s) URL")
+    cache = doc.get("git_cache")
+    if cache is not None and not (isinstance(cache, str) and cache.startswith("/")):
+        raise ConfigError("git_cache must be an absolute directory path")
     return Config(repos=tuple(repos), verdict_logins=frozenset(strings("verdict_logins")),
                   trusted_associations=frozenset(assoc), trusted_logins=frozenset(strings("trusted_logins")),
                   item_prefixes=tuple(prefixes), skip_authors=frozenset(strings("skip_authors")),
                   skip_branch_prefixes=tuple(strings("skip_branch_prefixes", ("release-please--",))),
-                  max_prs_per_repo=n, gh=tuple(gh), timeout_s=t,
-                  carry_verdicts_over_base_merges=carry)
+                  max_prs_per_repo=n, gh=gh, timeout_s=t,
+                  carry_verdicts_over_base_merges=carry, quipu_url=quipu, git_cache=cache, git=git)
 
 
 # ---------------------------------------------------------------- judgement
@@ -171,10 +202,9 @@ def skipped(cfg: Config, pr: dict) -> bool:
                 or any((pr.get("head_ref") or "").startswith(p) for p in cfg.skip_branch_prefixes))
 
 
-def verdict_commits(cfg: Config, pr: dict) -> frozenset[str]:
-    """The commits whose verdicts count for the head: the head, plus each
-    earlier PR commit reached from it through merge commits that only bring in
-    base-branch commits (main moved; the PR's own change did not).
+def base_merges(cfg: Config, pr: dict) -> list[tuple[str, list[str]]]:
+    """The merge commits on the head's first-parent line, newest first, that
+    only bring base-branch commits in: [(merge, parents)].
 
     Needs the PR's complete commit list (`commits`, oldest first, each with
     `oid` and `parents`; `commits_complete`). A merge parent outside that list
@@ -187,18 +217,39 @@ def verdict_commits(cfg: Config, pr: dict) -> frozenset[str]:
     commits = pr.get("commits")
     if (not cfg.carry_verdicts_over_base_merges or not pr.get("commits_complete")
             or not isinstance(commits, list) or not commits or commits[-1].get("oid") != head):
-        return frozenset({head})
+        return []
     parents = {c.get("oid"): c.get("parents") for c in commits}
-    out, cur = {head}, head
-    while True:
+    out, cur, seen = [], head, set()
+    while cur not in seen:
+        seen.add(cur)
         ps = parents.get(cur)
         if not isinstance(ps, list) or len(ps) < 2:
             break  # an ordinary commit (or unknown parents): the PR changed here
         first, others = ps[0], ps[1:]
         if first not in parents or any(o in parents for o in others):
             break  # not a base-only merge on the PR's first-parent line
-        out.add(first)
+        out.append((cur, list(ps)))
         cur = first
+    return out
+
+
+def verdict_commits(cfg: Config, pr: dict, *, proven: bool = True) -> frozenset[str]:
+    """The commits whose verdicts count for the head: the head, plus each
+    earlier PR commit reached from it through base-only merges (base_merges).
+
+    proven=True (what an APPROVE needs) also requires each merge on the way to
+    be proved clean (`pr["clean_merges"][merge] is True`, see merge_is_clean):
+    a merge whose tree is not the clean automatic merge of its parents carries
+    a conflict resolution or an extra edit, which nobody reviewed. proven=False
+    (what a REQUEST CHANGES needs: carrying a block is fail-safe) takes the
+    commit-list shape alone.
+    """
+    proofs = pr.get("clean_merges") or {}
+    out = {pr["head"]}
+    for merge, ps in base_merges(cfg, pr):
+        if proven and proofs.get(merge) is not True:
+            break
+        out.add(ps[0])
     return frozenset(out)
 
 
@@ -209,20 +260,21 @@ def head_verdicts(cfg: Config, pr: dict) -> list[str] | None:
     if not pr.get("reviews_complete") or not pr.get("comments_complete"):
         return None
     author = pr.get("author")
-    counted = verdict_commits(cfg, pr)
+    counted = {"approve": verdict_commits(cfg, pr), "changes": verdict_commits(cfg, pr, proven=False)}
     timed = []
     for r in pr.get("reviews", []):
         state = r.get("state")
-        if (r.get("commit") in counted and r.get("author") and r["author"] != author
-                and trusted(cfg, r["author"], r.get("association"))
-                and state in ("APPROVED", "CHANGES_REQUESTED")):
-            timed.append((r.get("at") or "", "approve" if state == "APPROVED" else "changes"))
+        word = {"APPROVED": "approve", "CHANGES_REQUESTED": "changes"}.get(state)
+        if (word and r.get("commit") in counted[word] and r.get("author") and r["author"] != author
+                and trusted(cfg, r["author"], r.get("association"))):
+            timed.append((r.get("at") or "", word))
     for c in pr.get("comments", []):
         if c.get("author") not in cfg.verdict_logins:
             continue
         m = VERDICT_LINE.match(c.get("body") or "")
-        if m and m.group(2).lower() in counted:
-            timed.append((c.get("at") or "", "approve" if m.group(1).upper() == "APPROVE" else "changes"))
+        word = m and ("approve" if m.group(1).upper() == "APPROVE" else "changes")
+        if m and m.group(2).lower() in counted[word]:
+            timed.append((c.get("at") or "", word))
     return [v for _, v in sorted(timed, key=lambda t: t[0])]
 
 
@@ -262,6 +314,11 @@ def judge(cfg: Config, pr: dict) -> list[tuple[str, str]]:
         out.append(("task", "changes-requested"))
     elif checks == "red":
         out.append(("task", "ci-red"))
+    elif pr.get("review_mode") == "none":
+        # Quipu says this repo needs no review: never recruit one. Green merges;
+        # unknown verdicts (a standing REQUEST CHANGES may be hidden) wait.
+        if verdicts is not None and checks == "green":
+            out.append(("merge", "green-and-approved"))
     elif verdicts is not None and not verdicts:
         out.append(("review", "new-head-unreviewed"))
     elif verdicts and verdicts[-1] == "approve" and checks == "green":
@@ -280,6 +337,156 @@ def records(cfg: Config, prs: list[dict], now: dt.datetime) -> list[dict]:
             out.append({"item": f"{pr['repo']}#{pr['number']}@{pr['head']}:{job}", "verdict": "READY",
                         "event_id": eid, "work_kind": job, "evidence": reason, "action": action})
     return out
+
+
+# ---------------------------------------------------------------- review policy
+
+def review_mode_from_rows(rows) -> str:
+    """st's rule (shantytown ephemeral.review_mode_from_rows): only a single,
+    unanimous "none" waives review; no row, an unknown value or conflicting
+    rows mean "non-author"."""
+    if not isinstance(rows, list):
+        return "non-author"
+    modes = set()
+    for row in rows:
+        value = row.get("mode") if isinstance(row, dict) else None
+        if isinstance(value, dict):
+            value = value.get("value")
+        modes.add(str(value).rsplit("/", 1)[-1].rsplit("#", 1)[-1] if value else "")
+    return "none" if modes == {"none"} else "non-author"
+
+
+def _ask(cfg: Config, name: str, params: dict) -> list:
+    req = urllib.request.Request(
+        cfg.quipu_url.rstrip("/") + "/ask", data=json.dumps({"name": name, "params": params}).encode(),
+        method="POST", headers={"Content-Type": "application/json", "User-Agent": "chaski-pr-lifecycle/1",
+                                "X-Quipu-Client": "chaski"})
+    with urllib.request.urlopen(req, timeout=min(cfg.timeout_s, 10)) as resp:
+        result = json.loads(resp.read(1_000_001))
+    if (not isinstance(result, dict) or result.get("error") or result.get("truncated") is not False
+            or not isinstance(result.get("rows"), list) or type(result.get("count")) is not int
+            or result["count"] != len(result["rows"]) or result["count"] >= REVIEW_MODE_LIMIT):
+        raise ValueError("named query completeness UNKNOWN")
+    return result["rows"]
+
+
+def review_modes(cfg: Config, repos, ask=_ask) -> dict[str, str | None]:
+    """{repo: "none" | "non-author" | None}, one Quipu read per repo. None is
+    unreadable (no quipu_url, timeout, refusal, truncation): review stays
+    required, as it is for "non-author"."""
+    out: dict[str, str | None] = {}
+    for repo in sorted(set(repos)):
+        if not cfg.quipu_url:
+            out[repo] = None
+            continue
+        try:
+            out[repo] = review_mode_from_rows(ask(cfg, REVIEW_MODE_QUERY, {"repo": repo}))
+        except Exception as exc:  # noqa: BLE001 - unreadable is UNKNOWN, never "none"
+            print(f"pr-lifecycle: {repo}: review mode unreadable ({type(exc).__name__}); "
+                  "review required", file=sys.stderr)
+            out[repo] = None
+    return out
+
+
+# ---------------------------------------------------------------- merge proofs
+
+def _git(cfg: Config, gitdir: Path | None, *args: str) -> subprocess.CompletedProcess:
+    helper = "!" + shlex.join([*cfg.gh, "auth", "git-credential"])
+    pre = [*cfg.git, "-c", "credential.helper=", "-c", f"credential.helper={helper}"]
+    if gitdir is not None:
+        pre += ["--git-dir", str(gitdir)]
+    return subprocess.run([*pre, *args], capture_output=True, text=True, timeout=cfg.timeout_s,
+                          check=False, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def merge_is_clean(cfg: Config, gitdir: Path, merge: str, parents: list[str]) -> bool:
+    """True only when `merge` has exactly these two parents and its tree is the
+    clean automatic merge of them (`git merge-tree --write-tree`, no conflict).
+    Anything else (an evil merge, a conflict resolution, an octopus, a git
+    failure) is False: the approval does not carry."""
+    if len(parents) != 2 or not all(SHA_RE.fullmatch(x or "") for x in [merge, *parents]):
+        return False
+    got = _git(cfg, gitdir, "rev-list", "--parents", "-n", "1", merge)
+    if got.returncode != 0 or got.stdout.split() != [merge, *parents]:
+        return False
+    tree = _git(cfg, gitdir, "rev-parse", "--verify", f"{merge}^{{tree}}")
+    clean = _git(cfg, gitdir, "merge-tree", "--write-tree", "--no-messages", *parents)
+    lines = clean.stdout.split()
+    return (tree.returncode == 0 and clean.returncode == 0 and len(lines) >= 1
+            and SHA_RE.fullmatch(lines[0]) is not None and lines[0] == tree.stdout.strip())
+
+
+def _repo_git(cfg: Config, repo: str, oids: list[str]) -> Path:
+    """A blobless bare mirror of `repo` under git_cache holding `oids`
+    (fetched only when missing). Raises on any failure."""
+    gitdir = Path(cfg.git_cache) / (repo.replace("/", "__") + ".git")
+    url = f"https://github.com/{repo}.git"
+    if not (gitdir / "HEAD").exists():
+        gitdir.parent.mkdir(parents=True, exist_ok=True)
+        r = _git(cfg, None, "clone", "--bare", "--quiet", "--filter=blob:none", "--no-tags", url, str(gitdir))
+        if r.returncode != 0:
+            raise RuntimeError(f"git clone {repo} failed: {r.stderr[:200]}")
+    missing = [o for o in oids if _git(cfg, gitdir, "cat-file", "-e", f"{o}^{{commit}}").returncode != 0]
+    if missing:
+        r = _git(cfg, gitdir, "fetch", "--quiet", "--no-tags", "origin", *missing)
+        if r.returncode != 0:
+            raise RuntimeError(f"git fetch {repo} failed: {r.stderr[:200]}")
+    return gitdir
+
+
+def _verdict_targets(cfg: Config, pr: dict) -> set[str]:
+    """Commits an APPROVE names (trusted review or crew comment), unfiltered by
+    head; used only to decide whether a merge proof is worth running."""
+    out = {r.get("commit") for r in pr.get("reviews", []) if r.get("state") == "APPROVED"}
+    for c in pr.get("comments", []):
+        m = c.get("author") in cfg.verdict_logins and VERDICT_LINE.match(c.get("body") or "")
+        if m and m.group(1).upper() == "APPROVE":
+            out.add(m.group(2).lower())
+    return {o for o in out if o}
+
+
+def add_merge_proofs(cfg: Config, prs: list[dict], prove=None) -> list[dict]:
+    """Set pr["clean_merges"] = {merge: bool} for the base-only merges an
+    APPROVE would have to carry across, newest first, stopping at the first
+    merge that is not clean. Only PRs whose APPROVE sits on an earlier commit
+    of that line are proved, so a tick with no main sync runs no git at all.
+    No git_cache means no proof, so an APPROVE does not carry."""
+    for pr in prs:
+        if "clean_merges" in pr or skipped(cfg, pr) or not SHA_RE.fullmatch(pr.get("head") or ""):
+            continue
+        chain = base_merges(cfg, pr)
+        targets = _verdict_targets(cfg, pr)
+        reach = [i for i, (_, ps) in enumerate(chain) if ps[0] in targets]
+        if not reach:
+            continue
+        chain = chain[:reach[-1] + 1]
+        proofs: dict[str, bool] = {}
+        if cfg.git_cache or prove:
+            try:
+                if prove is None:
+                    gitdir = _repo_git(cfg, pr["repo"], [m for m, _ in chain])
+                    check = lambda m, ps: merge_is_clean(cfg, gitdir, m, ps)  # noqa: E731
+                else:
+                    check = prove
+                for merge, ps in chain:
+                    proofs[merge] = bool(check(merge, ps))
+                    if not proofs[merge]:
+                        print(f"pr-lifecycle: {pr['repo']}#{pr['number']}: merge {merge[:12]} is not a "
+                              "clean merge of its parents; approval does not carry", file=sys.stderr)
+                        break
+            except Exception as exc:  # noqa: BLE001 - unproved is not clean
+                print(f"pr-lifecycle: {pr['repo']}#{pr['number']}: merge proof unknown "
+                      f"({type(exc).__name__}: {str(exc)[:200]}); approval does not carry", file=sys.stderr)
+        pr["clean_merges"] = proofs
+    return prs
+
+
+def add_review_modes(cfg: Config, prs: list[dict], ask=_ask) -> list[dict]:
+    judged = [p for p in prs if not skipped(cfg, p) and "review_mode" not in p]
+    modes = review_modes(cfg, [p["repo"] for p in judged], ask=ask) if judged else {}
+    for p in judged:
+        p["review_mode"] = modes.get(p["repo"])
+    return prs
 
 
 # ---------------------------------------------------------------- GitHub read
@@ -437,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
             prs = json.loads(Path(args.fixture).read_text())
         else:
             prs = add_details(cfg, list_open(cfg))
+        prs = add_merge_proofs(cfg, add_review_modes(cfg, prs))
         out = records(cfg, prs, dt.datetime.now(dt.timezone.utc))
     except (ConfigError, RuntimeError, OSError, ValueError, KeyError, TypeError,
             subprocess.TimeoutExpired) as exc:

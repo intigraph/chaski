@@ -62,19 +62,60 @@ verdicts under the shared operator login. A verdict for an older head does
 not count, except across a main sync (below).
 
 **Main moving does not re-arm review.** Stiwi 2026-11-28: "Stop re reviewing
-things, even when main change[s]". A verdict on an earlier PR commit still
-counts for the head when every commit from it to the head, along the first
+things, even when main change[s]". A verdict on an earlier PR commit can
+count for the head when every commit from it to the head, along the first
 parent, is a merge commit whose other parents are not in the PR's own commit
 list. GitHub lists every commit reachable from the head and not from the
 base, so a parent outside that list is already on the base branch: the merge
-only brought main in (GitHub's "Update branch"). An APPROVE therefore still
-leads to `merge` once the new head's required checks are green, and a
-REQUEST CHANGES still leads to `task`. A fresh review is still needed for:
-an ordinary commit after the verdict, merging another branch whose commits
-are in the PR, a rebase or force-push (the reviewed commit is gone), a commit
-list over 100 or a parent list over 5 (unknown), or
-`carry_verdicts_over_base_merges: false`. Edits made while resolving a merge
-conflict are not seen; the head's required checks still gate the merge.
+brought main in (GitHub's "Update branch").
+
+- A REQUEST CHANGES carries on that shape alone, so the head still gets a
+  `task`. Carrying a block can only cost a fix job, never an unreviewed merge.
+- An APPROVE carries only across merges that are **proved clean** (sattler
+  2026-11-28): the merge has exactly two parents and its tree equals
+  `git merge-tree --write-tree <p1> <p2>` of them, with no conflict. A merge
+  with a conflict resolution, or with any edit beyond the automatic merge
+  (`git merge --no-commit` plus a change), is new code, so it gets a
+  `review`. The proof runs in a blobless bare mirror per repo under
+  `git_cache` (fetched over HTTPS with `gh auth git-credential`), and only
+  for a PR whose APPROVE sits on an earlier commit of that merge line. A tick
+  with no main sync runs no git. No `git_cache`, a git failure or an octopus
+  merge means unproved, and unproved does not carry.
+
+A fresh review is still needed for an ordinary commit after the verdict,
+merging another branch whose commits are in the PR, a rebase or force-push
+(the reviewed commit is gone), a commit list over 100 or a parent list over
+5 (unknown), an unproved merge, or `carry_verdicts_over_base_merges: false`.
+
+**Merge path dependency.** st's merge gate (`st agent spawn --merge`,
+`ephemeral.merge_gate`) accepts a GitHub APPROVE or a signed verdict only on
+the **exact** head. A merge job recruited on a carried approval in a
+review-required repo is therefore refused by st until st applies the same
+clean-merge rule, and the job reports blocked rather than merging. Today the
+only review-required repo is `intigraph/quipu`, and the deploy already drops
+quipu merge events (`--skip-merge-repo intigraph/quipu`), so nothing stalls.
+Enable it for another review-required repo only after st accepts carried
+approvals.
+
+**Review policy from Quipu.** Stiwi 2026-11-28 again: re-reviews waste tokens.
+Each run asks Quipu's stored query `repo_review_mode` (`POST
+<quipu_url>/ask`, the same query and the same fail-closed rule as st's merge
+gate) once per repo that has a PR to judge. A unanimous `none` means the
+repo needs no review:
+
+| state of the head (mode `none`) | job | reason |
+|---|---|---|
+| latest verdict REQUEST CHANGES (carried as above) | `task` | `changes-requested` |
+| required checks red | `task` | `ci-red` |
+| required checks green, verdicts readable | `merge` | `green-and-approved` |
+| pending, unknown checks or unreadable verdicts | none | |
+
+No `review` is ever emitted for such a repo. The merge reason stays
+`green-and-approved` because the event contract and st's drain accept only
+that reason for `merge`; the approval is waived by policy, and st's merge
+gate waives it by reading the same query. Any other answer (`non-author`, no
+row, conflicting rows), an unreadable read (timeout, refusal, truncation) or
+no `quipu_url` keeps the review-required rules above.
 
 **Independence rests on the merge job.** Crew share one operator login, so
 the PR author and a `verdict_logins` reviewer are the same GitHub login. This
@@ -115,7 +156,10 @@ Two GraphQL calls per run for up to 20 non-draft PRs (one more per further
 20): an open-PR list across all repos, then head checks, the PR's commit list
 (last 100, with parents), reviews and comments.
 At PT2M that is about 60 calls an hour, far below the 5000 an hour limit.
-It uses the `gh` login of the chaski runner.
+It uses the `gh` login of the chaski runner. Quipu: one `/ask` per repo with
+a judged PR per run (at most 10). Git: only when an APPROVE would carry
+across a main sync; the first proof for a repo clones a blobless mirror, and
+later ones fetch only missing commits.
 
 ## Enabling (separate, reviewed steps)
 
